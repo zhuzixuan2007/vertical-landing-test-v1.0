@@ -7,6 +7,16 @@
 
 一个基于物理的火箭垂直着陆模拟器，灵感来自 SpaceX Falcon 9 和 Kerbal Space Program。
 
+## 🌿 分支说明
+
+- **`master`** - 主分支（当前版本）
+- **`feature/save-system`** - 保存系统功能演示分支
+  - 包含完整的游戏保存/加载系统
+  - 启动主菜单、自动保存、继续游戏等功能
+  - 基于旧项目结构，作为功能演示保留
+  - [查看分支](https://github.com/zhuzixuan2007/vertical-landing-test-v1.0/tree/feature/save-system)
+  - [查看文档](https://github.com/zhuzixuan2007/vertical-landing-test-v1.0/blob/feature/save-system/SAVE_SYSTEM_README.md)
+
 ## 新功能：游戏保存系统 ✨
 
 ### 主要特性
