@@ -2145,9 +2145,8 @@ public:
     proj = projMat;
     camPos = cameraPos;
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glFrontFace(GL_CW);
+    glDisable(GL_CULL_FACE); // Global default for hollow rocket parts
+    glFrontFace(GL_CCW);
     glClear(GL_DEPTH_BUFFER_BIT);
   }
 
@@ -2316,7 +2315,12 @@ public:
     // Pass time uniform for animated shaders (Earth clouds, Venus atmosphere, etc.)
     if (timeLoc != -1) glUniform1f(timeLoc, time);
     
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CW);
     mesh.draw();
+    glFrontFace(GL_CCW);
+    glDisable(GL_CULL_FACE);
   }
 
   void drawRing(const Mesh& ringMesh, const Mat4& model, float cr, float cg, float cb, float ca) {
@@ -2327,9 +2331,7 @@ public:
     glUniform3f(uri_lightDir, lightDir.x, lightDir.y, lightDir.z);
     glUniform4f(uri_baseColor, cr, cg, cb, ca);
     
-    glDisable(GL_CULL_FACE);
     ringMesh.draw();
-    glEnable(GL_CULL_FACE);
   }
 
   // 火焰/发光 Billboard (面向相机的面片)
@@ -2349,7 +2351,6 @@ public:
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE); // 防止视口翻转导致背面剔除
     
     glBindVertexArray(billboardVAO);
     glBindBuffer(GL_ARRAY_BUFFER, billboardVBO);
@@ -2359,7 +2360,6 @@ public:
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_BLEND);
@@ -2395,13 +2395,11 @@ public:
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glDisable(GL_CULL_FACE);
     glDepthMask(GL_FALSE);
     
     sphereMesh.draw();
 
     // Revert ALL state
-    glEnable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
@@ -2450,7 +2448,6 @@ public:
 
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
 
     glBindVertexArray(skyboxVAO);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -2458,7 +2455,6 @@ public:
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
-    glEnable(GL_CULL_FACE);
   }
 
   // Camera-facing dynamic ribbon (trajectory trail) with per-vertex colors
@@ -2511,14 +2507,12 @@ public:
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)(sizeof(Vec3)));
     glEnableVertexAttribArray(1);
 
-    glDisable(GL_CULL_FACE);
     glDepthMask(GL_FALSE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blending for glows
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (GLsizei)stripVerts.size());
 
-    glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(0);
