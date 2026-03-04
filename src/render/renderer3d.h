@@ -1654,8 +1654,8 @@ public:
       #define PI 3.14159265359
 
       // High step counts for quality inside-atmosphere rendering
-      const int PRIMARY_STEPS = 32;
-      const int LIGHT_STEPS = 8;
+      const int PRIMARY_STEPS = 24;
+      const int LIGHT_STEPS = 4;
       
       // --- Dynamic Atmosphere Parameters ---
       vec3 gRayleighCoeff;
@@ -1679,7 +1679,7 @@ public:
               gMieCoeff = 0.005; gHRayleigh = 8.0; gHMie = 1.0; gGMie = 0.8;
               gOzoneCoeff = vec3(0.00035, 0.00085, 0.00009); gHOzoneCenter = 25.0; gHOzoneWidth = 15.0;
               gCloudMinAlt = 3.0; gCloudMaxAlt = 14.0;
-              gCloudExtinction = vec3(0.04); gCloudScattering = vec3(0.75);
+              gCloudExtinction = vec3(0.08); gCloudScattering = vec3(0.45);
           } else if (uPlanetIdx == 2) {
               // VENUS - thick CO2 atmosphere with sulfuric acid clouds
               // Rayleigh must follow physical spectrum (blue > green > red) to avoid blue terminator artifact
@@ -1767,22 +1767,34 @@ public:
       }
 
       // --- NOISE & CLOUDS ---
-      float hash(vec3 p) {
-        p = fract(p * vec3(443.897, 441.423, 437.195));
-        p += dot(p, p.yzx + 19.19);
-        return fract((p.x + p.y) * p.z);
+      // Screen-space dither (non-structured)
+      float screenHash(vec2 uv) {
+          return fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453);
       }
+
+      // Pseudo-random gradient vector from integer lattice point (non-periodic)
+      vec3 hashGrad(vec3 p) {
+        // Purely arithmetic hash — no sin() periodicity
+        vec3 q = vec3(dot(p, vec3(127.1, 311.7, 74.7)),
+                      dot(p, vec3(269.5, 183.3, 246.1)),
+                      dot(p, vec3(113.5, 271.9, 124.6)));
+        return normalize(-1.0 + 2.0 * fract(q * fract(q * 0.3183099)));
+      }
+      // Gradient noise (Perlin-style) — no grid-aligned artifacts
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
-        f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-        float n000 = hash(i); float n100 = hash(i + vec3(1,0,0));
-        float n010 = hash(i + vec3(0,1,0)); float n110 = hash(i + vec3(1,1,0));
-        float n001 = hash(i + vec3(0,0,1)); float n101 = hash(i + vec3(1,0,1));
-        float n011 = hash(i + vec3(0,1,1)); float n111 = hash(i + vec3(1,1,1));
-        float nx00 = mix(n000, n100, f.x); float nx10 = mix(n010, n110, f.x);
-        float nx01 = mix(n001, n101, f.x); float nx11 = mix(n011, n111, f.x);
-        float nxy0 = mix(nx00, nx10, f.y); float nxy1 = mix(nx01, nx11, f.y);
-        return mix(nxy0, nxy1, f.z);
+        // Quintic Hermite interpolation (C2 continuous)
+        vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+        
+        return mix(mix(mix(dot(hashGrad(i + vec3(0,0,0)), f - vec3(0,0,0)),
+                           dot(hashGrad(i + vec3(1,0,0)), f - vec3(1,0,0)), u.x),
+                       mix(dot(hashGrad(i + vec3(0,1,0)), f - vec3(0,1,0)),
+                           dot(hashGrad(i + vec3(1,1,0)), f - vec3(1,1,0)), u.x), u.y),
+                   mix(mix(dot(hashGrad(i + vec3(0,0,1)), f - vec3(0,0,1)),
+                           dot(hashGrad(i + vec3(1,0,1)), f - vec3(1,0,1)), u.x),
+                       mix(dot(hashGrad(i + vec3(0,1,1)), f - vec3(0,1,1)),
+                           dot(hashGrad(i + vec3(1,1,1)), f - vec3(1,1,1)), u.x), u.y), u.z)
+               * 0.5 + 0.5; // Remap from [-1,1] to [0,1]
       }
       float fbm(vec3 p, int octaves) {
         float v = 0.0, amp = 0.5;
@@ -1794,7 +1806,7 @@ public:
         return v;
       }
       
-      float cloudDensity(vec3 p, float h) {
+      float cloudDensity(vec3 p, float h, bool highDetail) {
           if (h < gCloudMinAlt || h > gCloudMaxAlt) return 0.0;
           
           vec3 sph = normalize(p - uPlanetCenter);
@@ -1809,14 +1821,31 @@ public:
                   float altShape = 4.0 * altNorm * (1.0 - altNorm);
                   // Uniform wind rotation around Z-axis (poles)
                   float angle1 = t * -0.5; // Slow, steady drift
-                  float s1 = sin(angle1); float c1 = cos(angle1);
-                  vec3 windSph1 = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z);
+                  // Coriolis Warping: Wind shear based on latitude
+                  // Use cubic ease so equator stays calm, twist rises toward poles
+                  float latWarp = sph.z * sph.z * sph.z * 0.8; // Z is the polar axis
+                  float s1 = sin(angle1 + latWarp); 
+                  float c1 = cos(angle1 + latWarp);
+                  vec3 windSph1 = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z); // Rotate around Z axis
                   vec3 tc = windSph1 * 4.5;
-                  float warp = fbm(tc * 0.8, 2);
-                  float n = fbm(tc + vec3(warp * 1.5) + vec3(t * 0.05), 3); // Very subtle internal morphing
-                  // Thick clouds: low cut-off threshold
-                  float mask = smoothstep(0.35 + altNorm * 0.15, 0.65, n) * altShape;
-                  density = max(density, mask * 1.0); // Full density
+                  
+                  // Base cloud shape
+                  float n = 0.0;
+                  if (highDetail) {
+                      float warp = fbm(tc * 0.8, 2);
+                      n = fbm(tc + vec3(warp * 1.5) + vec3(t * 0.05), 3); // Internal morphing
+                      
+                      // Edge Erosion: subtract a small amount of detail noise to fringe the edges, but keep core solid
+                      float detail = fbm(tc * 3.5 - vec3(t * 0.1), 2);
+                      n = n - detail * 0.15; // Reduced from 0.25 so clouds don't become ghost-like
+                  } else {
+                      n = fbm(tc + vec3(t * 0.05), 1); // Fast path for shadow rays
+                  }
+                  
+                  // Thick clouds: tighter cut-off threshold for solid cotton, but still smooth at the very edge
+                  // A tighter lower bound (e.g., 0.35 instead of 0.15) brings back solid volumes
+                  float mask = smoothstep(0.35 + altNorm * 0.10, 0.60, n) * altShape;
+                  density = max(density, mask * 2.0); // Doubled density multiplier for solid, opaque look
               }
               
               // Layer 2: High-altitude Cirrus/Anvils (Thin, sweeping streaks)
@@ -1826,14 +1855,28 @@ public:
                   float altShape = 1.0 - pow(abs(altNorm * 2.0 - 1.0), 2.0);
                   // Slightly faster uniform wind for cirrus (Z-axis)
                   float angle2 = t * -1.2;
-                  float s2 = sin(angle2); float c2 = cos(angle2);
-                  vec3 windSph2 = vec3(sph.x * c2 - sph.y * s2, sph.x * s2 + sph.y * c2, sph.z);
+                  // Coriolis Warping for high cirrus
+                  float latWarp2 = sph.z * sph.z * sph.z * 0.4; // Z is the polar axis
+                  float s2 = sin(angle2 + latWarp2); 
+                  float c2 = cos(angle2 + latWarp2);
+                  vec3 windSph2 = vec3(sph.x * c2 - sph.y * s2, sph.x * s2 + sph.y * c2, sph.z); // Rotate around Z axis
                   vec3 tc = windSph2 * 12.0;
-                  float warp = fbm(tc * 1.2, 2);
-                  float n = fbm(tc + vec3(warp * 2.5) + vec3(t * 0.1), 4);
-                  // Thin clouds: tighter threshold, less solid mass
-                  float mask = smoothstep(0.55 + altNorm * 0.1, 0.70, n) * altShape;
-                  density = max(density, mask * 0.4); // Thinner density
+                  
+                  // Cirrus shape
+                  float n = 0.0;
+                  if (highDetail) {
+                      float warp = fbm(tc * 1.2, 2);
+                      n = fbm(tc + vec3(warp * 2.5) + vec3(t * 0.1), 4);
+                      // Cirrus Erosion: subtract wispy fractal detail
+                      float detail = fbm(tc * 4.0 + vec3(t * 0.2), 2);
+                      n = n - detail * 0.2;
+                  } else {
+                      n = fbm(tc + vec3(t * 0.1), 1); // Fast path for shadow rays
+                  }
+                  
+                  // Thin clouds: wider threshold, soft borders
+                  float mask = smoothstep(0.35 + altNorm * 0.15, 0.85, n) * altShape;
+                  density = max(density, mask * 0.35); // Thinner density
               }
           } else if (uPlanetIdx == 2) {
               // VENUS global acid cloud deck
@@ -1845,7 +1888,7 @@ public:
               vec3 windSph = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z);
               
               // Higher frequency to show swirling texture, lower density to avoid whiteout
-              float n = fbm(windSph * 8.0 + vec3(t * 0.1), 3);
+              float n = highDetail ? fbm(windSph * 8.0 + vec3(t * 0.1), 3) : fbm(windSph * 8.0 + vec3(t * 0.1), 1);
               density = (0.3 + 0.7 * n) * altShape * 0.8; 
           }
           
@@ -1881,7 +1924,7 @@ R"(
               dR += exp(-h / gHRayleigh) * stepSize;
               dM += exp(-h / gHMie) * stepSize;
               dO += ozoneDensity(h) * stepSize;
-              dC += cloudDensity(pos, h) * stepSize;
+              dC += cloudDensity(pos, h, false) * stepSize;
           }
       }
 
@@ -1928,7 +1971,7 @@ R"(
               float dR = exp(-h / gHRayleigh) * stepSize;
               float dM = exp(-h / gHMie) * stepSize;
               float dO = ozoneDensity(h) * stepSize;
-              float dC = cloudDensity(pos, h) * stepSize;
+              float dC = cloudDensity(pos, h, true) * stepSize;
               optDepthR += dR;
               optDepthM += dM;
               optDepthO += dO;
@@ -1938,16 +1981,38 @@ R"(
               float lightR, lightM, lightO, lightC;
               getOpticalDepth(pos, uLightDir, lightR, lightM, lightO, lightC);
               
-              // Total extinction including ozone absorption and clouds
-              vec3 tau = gRayleighCoeff * (optDepthR + lightR) 
-                       + gMieCoeff * 1.1 * (optDepthM + lightM)
-                       + gOzoneCoeff * (optDepthO + lightO)
-                       + gCloudExtinction * (optDepthC + lightC);
-              vec3 attenuation = exp(-tau);
+              // Total extinction including ozone absorption
+              vec3 tauBase = gRayleighCoeff * (optDepthR + lightR) 
+                           + gMieCoeff * 1.1 * (optDepthM + lightM)
+                           + gOzoneCoeff * (optDepthO + lightO);
+                           
+              // Cloud Extinction & Powder Effect Approx
+              float tauCloud = gCloudExtinction.x * (optDepthC + lightC);
+              vec3 attenuationBase = exp(-tauBase);
               
-              sumRayleigh += dR * attenuation;
-              sumMie += dM * attenuation;
+              // Beer-Lambert attenuation (direct absorption)
+              float beer = exp(-tauCloud);
+              
+              // Powder effect (multiple scattering illuminates interior edges)
+              // 1.0 - exp(-d*2.0) creates a soft "bump" of light just inside the cloud
+              float powder = 1.0 - exp(-tauCloud * 2.0);
+              
+              // Mix them: outer edges rely on powder, deep interiors rely on beer
+              float cloudAttenuation = beer * mix(1.0, powder, 0.7); 
+              
+              // Combine atmosphere and cloud attenuation
+              vec3 attenuation = attenuationBase * cloudAttenuation;
+              
+              sumRayleigh += dR * attenuationBase * exp(-gCloudExtinction.x * optDepthC); // Air only attenuated by local cloud, not sun cloud
+              sumMie += dM * attenuationBase * exp(-gCloudExtinction.x * optDepthC);
               sumCloud += dC * attenuation;
+              
+              // Early Ray Termination (ERT)
+              // If transmittance (attenuation) drops below 1%, stop raymarching to save massive GPU cycles
+              float maxTransmittance = max(attenuation.x, max(attenuation.y, attenuation.z));
+              if (maxTransmittance < 0.01) {
+                  break; 
+              }
           }
           
           // Phase functions
