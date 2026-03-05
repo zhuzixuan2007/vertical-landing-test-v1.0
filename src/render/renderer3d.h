@@ -1831,7 +1831,7 @@ public:
           if (h < gCloudMinAlt || h > gCloudMaxAlt) return 0.0;
           
           vec3 sph = normalize(p - uPlanetCenter);
-          float t = uTime * 0.015;
+          float t = uTime * 0.004; // Much slower base time for planetary scale
           float density = 0.0;
           
           if (uPlanetIdx == 3) {
@@ -1841,7 +1841,7 @@ public:
                   float altNorm = (h - gCloudMinAlt) / (7.0 - gCloudMinAlt);
                   float altShape = 4.0 * altNorm * (1.0 - altNorm);
                   // Uniform wind rotation around Z-axis (poles)
-                  float angle1 = t * -0.5; // Slow, steady drift
+                  float angle1 = t * -0.2; // Slower drift
                   // Coriolis Warping: Wind shear based on latitude
                   // Use cubic ease so equator stays calm, twist rises toward poles
                   float latWarp = sph.z * sph.z * sph.z * 0.8; // Z is the polar axis
@@ -1850,7 +1850,7 @@ public:
                   vec3 windSph1 = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z); // Rotate around Z axis
                   
                   // ====== CYCLONE ATTRACTOR (Hurricane) ======
-                  float cycAngle = t * -0.2;
+                  float cycAngle = t * -0.1; // Slower cyclone movement
                   vec3 cycCenter = normalize(vec3(0.6 * cos(cycAngle), 0.6 * sin(cycAngle), 0.35)); // Mid-latitude
                   float cycDist = distance(windSph1, cycCenter);
                   float cycRadius = 0.25; // Realistic proportion (~1500km on Earth)
@@ -1867,7 +1867,7 @@ public:
                   
                   // ====== MACRO CLOUD COVERAGE (Fronts & Clear Oceans) ======
                   vec3 coverageSph = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z);
-                  float coverage = fbm(coverageSph * 2.5 + vec3(t * 0.02), 3);
+                  float coverage = fbm(coverageSph * 2.5 + vec3(t * 0.01), 3);
                   // Target ~66% cloud cover: raise bounds so more area falls below threshold
                   coverage = smoothstep(0.28, 0.52, coverage);
                   
@@ -1884,11 +1884,11 @@ public:
                   float n = 0.0;
                   if (highDetail) {
                       float warp = fbm(tc * 0.5, 3);
-                      n = fbm(tc + vec3(warp * 1.2) + vec3(t * 0.05), 6); 
-                      float detail = fbm(tc * 3.0 - vec3(t * 0.1), 4);
+                      n = fbm(tc + vec3(warp * 1.2) + vec3(t * 0.02), 6); 
+                      float detail = fbm(tc * 3.0 - vec3(t * 0.04), 4);
                       n = n - detail * 0.3; 
                   } else {
-                      n = fbm(tc + vec3(t * 0.05), 2);
+                      n = fbm(tc + vec3(t * 0.02), 2);
                   }
                   
                   // coverage=1.0 -> threshold=0.20 (dense fronts)
@@ -1904,7 +1904,7 @@ public:
                   // Flatter top shape for anvils
                   float altShape = 1.0 - pow(abs(altNorm * 2.0 - 1.0), 2.0);
                   // Slightly faster uniform wind for cirrus (Z-axis)
-                  float angle2 = t * -1.2;
+                  float angle2 = t * -0.5;
                   // Coriolis Warping for high cirrus
                   float latWarp2 = sph.z * sph.z * sph.z * 0.4; // Z is the polar axis
                   float s2 = sin(angle2 + latWarp2); 
@@ -1916,12 +1916,12 @@ public:
                   float n = 0.0;
                   if (highDetail) {
                       float warp = fbm(tc * 1.2, 2);
-                      n = fbm(tc + vec3(warp * 2.5) + vec3(t * 0.1), 4);
+                      n = fbm(tc + vec3(warp * 2.5) + vec3(t * 0.04), 4);
                       // Cirrus Erosion: subtract wispy fractal detail
-                      float detail = fbm(tc * 4.0 + vec3(t * 0.2), 2);
+                      float detail = fbm(tc * 4.0 + vec3(t * 0.08), 2);
                       n = n - detail * 0.2;
                   } else {
-                      n = fbm(tc + vec3(t * 0.1), 1); // Fast path for shadow rays
+                      n = fbm(tc + vec3(t * 0.04), 1); // Fast path for shadow rays
                   }
                   
                   // Thin clouds: wider threshold, soft borders
@@ -1933,12 +1933,12 @@ public:
               float altNorm = (h - gCloudMinAlt) / (gCloudMaxAlt - gCloudMinAlt);
               float altShape = 4.0 * altNorm * (1.0 - altNorm);
               
-              float angle = t * -0.2; // slow super-rotation
+              float angle = t * -0.1; // slow super-rotation
               float s1 = sin(angle); float c1 = cos(angle);
               vec3 windSph = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z);
               
               // Higher frequency to show swirling texture, lower density to avoid whiteout
-              float n = highDetail ? fbm(windSph * 8.0 + vec3(t * 0.1), 3) : fbm(windSph * 8.0 + vec3(t * 0.1), 1);
+              float n = highDetail ? fbm(windSph * 8.0 + vec3(t * 0.05), 3) : fbm(windSph * 8.0 + vec3(t * 0.05), 1);
               density = (0.3 + 0.7 * n) * altShape * 0.8; 
           }
           
