@@ -341,6 +341,19 @@ public:
   GLuint lensFlareProg, lfVAO, lfVBO;
   GLint ulf_sunScreenPos, ulf_aspect, ulf_color, ulf_intensity;
 
+  // ===== TAA (Temporal Anti-Aliasing) Infrastructure =====
+  GLuint taaFBO[2] = {0, 0};        // Ping-pong framebuffers
+  GLuint taaColorTex[2] = {0, 0};   // Color textures for ping-pong
+  GLuint taaDepthTex = 0;           // Shared depth texture (for reprojection)
+  GLuint taaProg = 0;               // TAA resolve shader
+  GLuint taaVAO = 0;                // Fullscreen quad VAO (reuse skybox)
+  int taaWidth = 0, taaHeight = 0;  // Current FBO dimensions
+  int taaFrameIndex = 0;            // Frame counter for noise animation
+  bool taaInitialized = false;
+
+  Mat4 prevViewProj;                // History matrix
+  Mat4 invViewProj;                 // Current inverse matrix
+
   Renderer3D() {
     // --- Standard 3D Shader (Phong) ---
     const char* vertSrc = R"(
@@ -1768,9 +1781,16 @@ public:
       }
 
       // --- NOISE & CLOUDS ---
-      // Screen-space dither (non-structured)
+      // Interleaved Gradient Noise (Jimenez 2014, used in AAA engines)
+      // Produces much more uniform spatial distribution than white noise,
+      // reducing visible clumping artifacts dramatically.
+      uniform int uFrameIndex; // Animated frame counter for temporal variation
       float screenHash(vec2 uv) {
-          return fract(sin(dot(uv, vec2(12.9898, 78.233))) * 43758.5453);
+          // IGN base: very uniform spatial distribution
+          float ign = fract(52.9829189 * fract(dot(uv, vec2(0.06711056, 0.00583715))));
+          // Animate per-frame using golden ratio offset for low-discrepancy sequence
+          float animated = fract(ign + float(uFrameIndex % 32) * 0.6180339887);
+          return animated;
       }
 
       // Pseudo-random gradient vector from integer lattice point (non-periodic)
@@ -1997,6 +2017,10 @@ R"(
           if (segmentLength <= 0.0) discard;
           
           float stepSize = segmentLength / float(PRIMARY_STEPS);
+          
+          // Apply screen-space dithering to eliminate banding artifacts
+          float jitter = screenHash(gl_FragCoord.xy);
+          tNear += jitter * stepSize;
           
           vec3 sumRayleigh = vec3(0.0);
           vec3 sumMie = vec3(0.0);
@@ -2401,16 +2425,202 @@ R"(
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
+
+    // --- TAA Resolve Shader ---
+    const char* taaVertSrc = R"(
+      #version 330 core
+      layout(location=0) in vec2 aPos;
+      out vec2 vUV;
+      void main() {
+        vUV = aPos * 0.5 + 0.5;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+      }
+    )";
+    const char* taaFragSrc = R"(
+      #version 330 core
+      in vec2 vUV;
+      uniform sampler2D uCurrentFrame;
+      uniform sampler2D uHistoryFrame;
+      uniform sampler2D uDepthTex;
+      uniform float uBlendFactor;
+      
+      uniform mat4 uInvViewProj;
+      uniform mat4 uPrevViewProj;
+
+      out vec4 FragColor;
+
+      void main() {
+        // 1. SAMPLING: Pure screen-space history
+        vec4 current = texture(uCurrentFrame, vUV);
+        vec4 history = texture(uHistoryFrame, vUV);
+
+        // 2. VARIANCE CLIPPING (High quality anti-ghosting)
+        vec2 texelSize = 1.0 / vec2(textureSize(uCurrentFrame, 0));
+        vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+        
+        // 3x3 neighborhood statistics for "soft" clamping
+        for (int x = -1; x <= 1; x++) {
+          for (int y = -1; y <= 1; y++) {
+            vec3 s = texture(uCurrentFrame, vUV + vec2(float(x), float(y)) * texelSize).rgb;
+            m1 += s;
+            m2 += s * s;
+          }
+        }
+        
+        vec3 mu = m1 / 9.0;
+        vec3 sigma = sqrt(max(vec3(0.0), m2 / 9.0 - mu * mu));
+        
+        // Clamp history to mu +/- N*sigma (variance box)
+        float gamma = 1.5; // Controls the "tightness" of history rejection
+        vec3 cMin = mu - gamma * sigma;
+        vec3 cMax = mu + gamma * sigma;
+        
+        history.rgb = clamp(history.rgb, cMin, cMax);
+
+        // Standard blend factor (smooth accumulation when static, rejection when moving)
+        FragColor = mix(history, current, uBlendFactor);
+      }
+    )";
+    taaProg = compileProgram(taaVertSrc, taaFragSrc);
+    taaVAO = skyboxVAO; // Reuse the fullscreen quad
+  }
+
+  // Initialize or resize TAA framebuffers
+  void initTAA(int width, int height) {
+    if (taaInitialized && taaWidth == width && taaHeight == height) return;
+
+    // Delete old resources if resizing
+    if (taaInitialized) {
+      glDeleteFramebuffers(2, taaFBO);
+      glDeleteTextures(2, taaColorTex);
+      glDeleteTextures(1, &taaDepthTex);
+    }
+
+    taaWidth = width;
+    taaHeight = height;
+
+    // Create two color textures for ping-pong
+    glGenTextures(2, taaColorTex);
+    for (int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, taaColorTex[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    // Shared depth texture (CRITICAL for reprojection)
+    glGenTextures(1, &taaDepthTex);
+    glBindTexture(GL_TEXTURE_2D, taaDepthTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Create two FBOs
+    glGenFramebuffers(2, taaFBO);
+    for (int i = 0; i < 2; i++) {
+      glBindFramebuffer(GL_FRAMEBUFFER, taaFBO[i]);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, taaColorTex[i], 0);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, taaDepthTex, 0);
+      GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      if (status != GL_FRAMEBUFFER_COMPLETE) {
+        printf("TAA FBO %d incomplete: 0x%x\n", i, status);
+      }
+    }
+
+    // Clear both textures to black
+    for (int i = 0; i < 2; i++) {
+      glBindFramebuffer(GL_FRAMEBUFFER, taaFBO[i]);
+      glClearColor(0, 0, 0, 0);
+      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    taaInitialized = true;
+  }
+
+  // Begin rendering the current frame into TAA FBO
+  void beginTAAPass() {
+    int currentIdx = taaFrameIndex % 2;
+    glBindFramebuffer(GL_FRAMEBUFFER, taaFBO[currentIdx]);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  }
+
+  // Resolve TAA: blend current frame with history, output to default framebuffer
+  void resolveTAA() {
+    int currentIdx = taaFrameIndex % 2;
+    int historyIdx = 1 - currentIdx;
+
+    // Bind back to the default framebuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    glUseProgram(taaProg);
+
+    // Bind current frame to texture unit 0
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, taaColorTex[currentIdx]);
+    glUniform1i(glGetUniformLocation(taaProg, "uCurrentFrame"), 0);
+
+    // Bind history frame to texture unit 1
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, taaColorTex[historyIdx]);
+    glUniform1i(glGetUniformLocation(taaProg, "uHistoryFrame"), 1);
+
+    // Bind depth texture to texture unit 2
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, taaDepthTex);
+    glUniform1i(glGetUniformLocation(taaProg, "uDepthTex"), 2);
+
+    // Pass matrices for reprojection
+    glUniformMatrix4fv(glGetUniformLocation(taaProg, "uInvViewProj"), 1, GL_FALSE, invViewProj.m);
+    glUniformMatrix4fv(glGetUniformLocation(taaProg, "uPrevViewProj"), 1, GL_FALSE, prevViewProj.m);
+
+    // Blend factor: 10% new, 90% history for smooth accumulation
+    // First few frames use more of the current frame to converge faster
+    float blend = (taaFrameIndex < 8) ? 0.5f : 0.1f;
+    glUniform1f(glGetUniformLocation(taaProg, "uBlendFactor"), blend);
+
+    // Render fullscreen quad with alpha blending to composite over existing scene
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); // Premultiplied-alpha style
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+
+    glBindVertexArray(taaVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glActiveTexture(GL_TEXTURE0);
+
+    // Copy resolved result back to history buffer for next frame
+    // We read from default FB and write into the current TAA texture
+    glBindTexture(GL_TEXTURE_2D, taaColorTex[currentIdx]);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, taaWidth, taaHeight);
+
+    taaFrameIndex++;
   }
 
   void beginFrame(const Mat4& viewMat, const Mat4& projMat, const Vec3& cameraPos) {
     view = viewMat;
     proj = projMat;
     camPos = cameraPos;
+
+    // Track matrices for TAA reprojection
+    Mat4 currentVP = proj * view;
+    // Note: main.cpp will handle setting prevViewProj before this is called or using a setter
+    invViewProj = currentVP.inverse();
+
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE); // Global default for hollow rocket parts
     glFrontFace(GL_CCW);
-    glClear(GL_DEPTH_BUFFER_BIT);
   }
 
   // 绘制单个 Mesh, 指定 Model 矩阵和颜色
@@ -2660,6 +2870,9 @@ R"(
     glUniform1f(u_surfaceRadius, surfaceRadius);
     glUniform1f(u_time, time);
     glUniform1i(u_planetIdx, planetIdx);
+    // Pass frame index for animated noise (TAA jitter)
+    GLint u_frameIdx = glGetUniformLocation(atmoProg, "uFrameIndex");
+    glUniform1i(u_frameIdx, taaFrameIndex);
 
     // --- Graphics State for Volumetric Shell ---
     // Depth test OFF: raymarching handles planet occlusion mathematically.

@@ -584,6 +584,7 @@ int main() {
       // 相机设置
       int ww, wh;
       glfwGetFramebufferSize(window, &ww, &wh);
+      r3d->initTAA(ww, wh);
       float aspect = (float)ww / (float)wh;
 
       Vec3 camEye_rel, camTarget_rel, camUpVec;
@@ -721,6 +722,8 @@ int main() {
       macro_near = fmaxf(macro_near, cam_dist * 0.001f); // but never clip behind target
       
       Mat4 macroProjMat = Mat4::perspective(0.8f, aspect, macro_near, far_plane);
+      
+      r3d->beginTAAPass();
       r3d->beginFrame(viewMat, macroProjMat, camEye_rel);
 
       // ===== SKYBOX: Procedural Starfield + Milky Way =====
@@ -1091,6 +1094,9 @@ int main() {
           }
         }
       }
+
+
+      r3d->resolveTAA();
 
       // =========== PASS 2: MICRO FOREGROUND ===========
       // 微观近景火箭专用的相机矩阵 (极近裁剪面，用于精确绘制 40米的火箭)
