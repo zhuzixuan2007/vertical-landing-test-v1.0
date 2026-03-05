@@ -13,14 +13,12 @@
 // Part 0: 数学常量与辅助工具
 // ==========================================
 
-// 简单的二维向量工具
-struct Vec2 {
-  double x, y;
-};
+// 简单的二维向量(现统一使用 math3d.h 的 Vec2)
+#include "math/math3d.h"
 
-inline Vec2 rotateVec(double x, double y, double angle) {
-  double s = sin(angle);
-  double c = cos(angle);
+inline Vec2 rotateVec(float x, float y, float angle) {
+  float s = sinf(angle);
+  float c = cosf(angle);
   return {x * c - y * s, x * s + y * c};
 }
 

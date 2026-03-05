@@ -7,6 +7,7 @@
 
 #include "math/math3d.h"
 #include "render/renderer3d.h"
+#include "render/model_loader.h"
 #include "core/rocket_state.h"
 #include "physics/physics_system.h"
 #include "control/control_system.h"
@@ -247,6 +248,11 @@ int main() {
   Mesh rocketBody = MeshGen::cylinder(32, 1.0f, 1.0f);
   Mesh rocketNose = MeshGen::cone(32, 1.0f, 1.0f);
   Mesh rocketBox  = MeshGen::box(1.0f, 1.0f, 1.0f);
+  
+  // 尝试加载发射台模型 (如果存在)
+  Mesh launchPadMesh = ModelLoader::loadOBJ("assets/launch_pad.obj");
+  bool has_launch_pad = (launchPadMesh.indexCount > 0);
+
   int cam_mode_3d = 0; // 0=自由轨道, 1=跟踪, 2=全景
   static bool c_was_pressed = false;
   // 四元数轨道球相机
@@ -1189,6 +1195,44 @@ int main() {
             r3d->drawMesh(rocketBody, ringBotMdl, 0.2f, 0.2f, 0.25f, 1.0f, 0.4f);
           }
         }
+      }
+
+      // ===== 发射台渲染 (Launch Pad Generation / Rendering) =====
+      if (rocket_state.altitude < 2000.0 && current_soi_index == 3) {
+          CelestialBody& earth = SOLAR_SYSTEM[3];
+          // Launch pad is fixed at inertial (0, R, 0) relative to Earth center
+          Vec3 padCenter(
+              (float)(earth.px * ws_d - ro_x), 
+              (float)((earth.py + earth.radius) * ws_d - ro_y), 
+              (float)(earth.pz * ws_d - ro_z)
+          );
+          Vec3 padUp(0.0f, 1.0f, 0.0f);
+          Vec3 padRight(1.0f, 0.0f, 0.0f);
+          
+          if (has_launch_pad) {
+              // 有自定义OBJ模型：缩放并放置于发射位
+              float pad_scale = earth_r * 0.005f; // 根据模型本身缩放调整
+              Mat4 padModel = Mat4::scale(Vec3(pad_scale, pad_scale, pad_scale));
+              padModel = Mat4::translate(padCenter) * padModel;
+              r3d->drawMesh(launchPadMesh, padModel, 0.4f, 0.4f, 0.42f, 1.0f, 0.2f);
+          } else {
+              // 备用发射台
+              float pad_w = rw_3d * 20.0f; // 发射台底座宽度 (火箭宽度的20倍)
+              float pad_h = rh * 0.2f;    // 发射台底座高度
+              
+              // 基座 (灰色混凝土)
+              Mat4 baseMdl = Mat4::scale(Vec3(pad_w, pad_h, pad_w));
+              baseMdl = Mat4::translate(padCenter - padUp * (pad_h * 0.5f)) * baseMdl;
+              r3d->drawMesh(rocketBox, baseMdl, 0.4f, 0.4f, 0.4f, 1.0f, 0.1f);
+              
+              // 简易红色脐带塔架 (站在基座旁边)
+              float tower_h = rh * 1.5f;   // 塔架比火箭高50%
+              float tower_w = rw_3d * 3.0f; // 塔架宽度
+              Vec3 towerCenter = padCenter + padRight * (rw_3d * 4.0f) + padUp * (tower_h * 0.5f - pad_h * 0.5f);
+              Mat4 towerMdl = Mat4::scale(Vec3(tower_w, tower_h, tower_w));
+              towerMdl = Mat4::translate(towerCenter) * towerMdl;
+              r3d->drawMesh(rocketBox, towerMdl, 0.7f, 0.15f, 0.15f, 1.0f, 0.3f);
+          }
       }
 
       // ===== 3D 火焰/尾焰粒子 =====
