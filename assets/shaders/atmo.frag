@@ -6,19 +6,20 @@ uniform vec3 uLightDir;
 uniform vec3 uPlanetCenter;
 uniform float uInnerRadius;
 uniform float uOuterRadius;
+uniform float uSurfaceRadius; // Actual physical radius for height calculation
 
 out vec4 FragColor;
 
 #define PI 3.14159265359
 
-const int PRIMARY_STEPS = 16;
-const int LIGHT_STEPS = 6;
+const int PRIMARY_STEPS = 40;
+const int LIGHT_STEPS = 12;
 
 // === Cinematic Parameters (Meter Units) ===
-const vec3 RAYLEIGH_COEFF = (vec3(0.0058, 0.0135, 0.0331) * 3.5) / 1000.0;
-const float MIE_COEFF = (0.003 * 3.0) / 1000.0;
-const float H_RAYLEIGH = 8000.0;  // 8 km (meters)
-const float H_MIE = 1200.0;       // 1.2 km (meters)
+const vec3 RAYLEIGH_COEFF = vec3(0.0058, 0.0135, 0.0331) * 3.5;
+const float MIE_COEFF = 0.003 * 3.0;
+const float H_RAYLEIGH = 8.0;  // 8 km (world units)
+const float H_MIE = 1.2;       // 1.2 km (world units)
 const float G_MIE = 0.85;
 
 bool intersectSphere(vec3 ro, vec3 rd, float radius, out float t0, out float t1) {
@@ -46,6 +47,7 @@ float miePhase(float cosTheta) {
 void getOpticalDepth(vec3 p, vec3 lightDir, out float dRayleigh, out float dMie) {
     dRayleigh = 0.0; dMie = 0.0;
 
+    // Soft shadow logic: if light ray hits planet core, return high depth
     float tS0, tS1;
     if (intersectSphere(p, lightDir, uInnerRadius, tS0, tS1) && tS0 > 0.0) {
         dRayleigh = 1e6; dMie = 1e6;
@@ -57,7 +59,7 @@ void getOpticalDepth(vec3 p, vec3 lightDir, out float dRayleigh, out float dMie)
     float stepSize = t1 / float(LIGHT_STEPS);
     for (int i = 0; i < LIGHT_STEPS; i++) {
         vec3 pos = p + lightDir * (float(i) + 0.5) * stepSize;
-        float h = length(pos - uPlanetCenter) - uInnerRadius;
+        float h = length(pos - uPlanetCenter) - uSurfaceRadius;
         dRayleigh += exp(-max(h, 0.0) / H_RAYLEIGH) * stepSize;
         dMie += exp(-max(h, 0.0) / H_MIE) * stepSize;
     }
@@ -70,7 +72,9 @@ void main() {
 
     float tSurf0, tSurf1;
     if (intersectSphere(uCamPos, rayDir, uInnerRadius, tSurf0, tSurf1)) {
-        if (tSurf0 > 0.0) tFar = min(tFar, tSurf0);
+        if (tSurf0 > 0.0) {
+            tFar = min(tFar, tSurf0);
+        }
     }
 
     tNear = max(tNear, 0.0);
@@ -87,7 +91,7 @@ void main() {
 
     for (int i = 0; i < PRIMARY_STEPS; i++) {
         vec3 pos = uCamPos + rayDir * (tNear + (float(i) + 0.5) * stepSize);
-        float h = length(pos - uPlanetCenter) - uInnerRadius;
+        float h = length(pos - uPlanetCenter) - uSurfaceRadius;
         if (h < 0.0) h = 0.0;
 
         float dR = exp(-h / H_RAYLEIGH) * stepSize;

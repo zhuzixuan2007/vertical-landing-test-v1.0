@@ -1646,6 +1646,7 @@ public:
       uniform vec3 uPlanetCenter;
       uniform float uInnerRadius;
       uniform float uOuterRadius;
+      uniform float uSurfaceRadius;
       uniform float uTime;
       uniform int uPlanetIdx;
       
@@ -1654,8 +1655,8 @@ public:
       #define PI 3.14159265359
 
       // High step counts for quality inside-atmosphere rendering
-      const int PRIMARY_STEPS = 24;
-      const int LIGHT_STEPS = 4;
+      const int PRIMARY_STEPS = 48;
+      const int LIGHT_STEPS = 16;
       
       // --- Dynamic Atmosphere Parameters ---
       vec3 gRayleighCoeff;
@@ -1827,25 +1828,54 @@ public:
                   float s1 = sin(angle1 + latWarp); 
                   float c1 = cos(angle1 + latWarp);
                   vec3 windSph1 = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z); // Rotate around Z axis
-                  vec3 tc = windSph1 * 4.5;
                   
-                  // Base cloud shape
-                  float n = 0.0;
-                  if (highDetail) {
-                      float warp = fbm(tc * 0.8, 2);
-                      n = fbm(tc + vec3(warp * 1.5) + vec3(t * 0.05), 3); // Internal morphing
-                      
-                      // Edge Erosion: subtract a small amount of detail noise to fringe the edges, but keep core solid
-                      float detail = fbm(tc * 3.5 - vec3(t * 0.1), 2);
-                      n = n - detail * 0.15; // Reduced from 0.25 so clouds don't become ghost-like
-                  } else {
-                      n = fbm(tc + vec3(t * 0.05), 1); // Fast path for shadow rays
+                  // ====== CYCLONE ATTRACTOR (Hurricane) ======
+                  float cycAngle = t * -0.2;
+                  vec3 cycCenter = normalize(vec3(0.6 * cos(cycAngle), 0.6 * sin(cycAngle), 0.35)); // Mid-latitude
+                  float cycDist = distance(windSph1, cycCenter);
+                  float cycRadius = 0.25; // Realistic proportion (~1500km on Earth)
+                  
+                  // Gradual feathered edge: twist fades smoothly at boundary
+                  float cycInfluence = smoothstep(cycRadius, cycRadius * 0.3, cycDist); // 0 at edge, 1 near center
+                  if (cycInfluence > 0.001) {
+                      float twist = pow(cycInfluence, 1.5) * 8.0; // Vortex intensity
+                      // Rodrigues rotation around the cyclone center
+                      float ct = cos(twist); float st = sin(twist);
+                      vec3 warped = windSph1 * ct + cross(cycCenter, windSph1) * st + cycCenter * dot(cycCenter, windSph1) * (1.0 - ct);
+                      windSph1 = mix(windSph1, warped, cycInfluence); // Smooth blend at edges
                   }
                   
-                  // Thick clouds: tighter cut-off threshold for solid cotton, but still smooth at the very edge
-                  // A tighter lower bound (e.g., 0.35 instead of 0.15) brings back solid volumes
-                  float mask = smoothstep(0.35 + altNorm * 0.10, 0.60, n) * altShape;
-                  density = max(density, mask * 2.0); // Doubled density multiplier for solid, opaque look
+                  // ====== MACRO CLOUD COVERAGE (Fronts & Clear Oceans) ======
+                  vec3 coverageSph = vec3(sph.x * c1 - sph.y * s1, sph.x * s1 + sph.y * c1, sph.z);
+                  float coverage = fbm(coverageSph * 2.5 + vec3(t * 0.02), 3);
+                  // Target ~66% cloud cover: raise bounds so more area falls below threshold
+                  coverage = smoothstep(0.28, 0.52, coverage);
+                  
+                  // Force cloud buildup around cyclone, carve out eye
+                  if (cycInfluence > 0.001) {
+                      float eye = 0.012; // Tiny eye (~75km)
+                      float eyewall = smoothstep(eye, eye + 0.03, cycDist) * smoothstep(cycRadius * 0.6, cycRadius * 0.15, cycDist);
+                      coverage = max(coverage, eyewall * 0.95); 
+                      coverage *= smoothstep(eye * 0.3, eye, cycDist); 
+                  }
+                  
+                  // Detail noise
+                  vec3 tc = windSph1 * 14.0;
+                  float n = 0.0;
+                  if (highDetail) {
+                      float warp = fbm(tc * 0.5, 3);
+                      n = fbm(tc + vec3(warp * 1.2) + vec3(t * 0.05), 6); 
+                      float detail = fbm(tc * 3.0 - vec3(t * 0.1), 4);
+                      n = n - detail * 0.3; 
+                  } else {
+                      n = fbm(tc + vec3(t * 0.05), 2);
+                  }
+                  
+                  // coverage=1.0 -> threshold=0.20 (dense fronts)
+                  // coverage=0.0 -> threshold=0.58 (clear skies, only occasional puffs)
+                  float threshold = mix(0.58, 0.20, coverage);
+                  float mask = smoothstep(threshold, threshold + 0.12, n) * altShape;
+                  density = max(density, mask * 4.0);
               }
               
               // Layer 2: High-altitude Cirrus/Anvils (Thin, sweeping streaks)
@@ -1897,10 +1927,23 @@ public:
 )"
 R"(
       float cloudPhase(float cosTheta) {
-          float g = 0.8; float g2 = g * g;
-          float num = 0.25 / PI * (1.0 - g2);
-          float denom = pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5);
-          return num / max(denom, 1e-6);
+          // Dual-Lobe Henyey-Greenstein (Silver lining + backscatter)
+          // Look towards sun: strong forward scattering (silver lining)
+          float g1 = 0.85; 
+          float num1 = 1.0 - g1 * g1;
+          float denom1 = pow(1.0 + g1 * g1 - 2.0 * g1 * cosTheta, 1.5);
+          float phase1 = (1.0 / (4.0 * PI)) * (num1 / denom1);
+          
+          // Look away from sun: subtle backward scattering (cloud brightness)
+          float g2 = -0.3;
+          float num2 = 1.0 - g2 * g2;
+          float denom2 = pow(1.0 + g2 * g2 - 2.0 * g2 * cosTheta, 1.5);
+          float phase2 = (1.0 / (4.0 * PI)) * (num2 / denom2);
+          
+          // Mix lobes: mostly forward scattering, some backward
+          float w = 0.7; // Weight of forward lobe
+          // Reduced boost from 12.0 to 1.5 to prevent blowing out exposure
+          return mix(phase2, phase1, w) * 1.5; 
       }
 
       void getOpticalDepth(vec3 p, vec3 lightDir, out float dR, out float dM, out float dO, out float dC) {
@@ -1919,8 +1962,8 @@ R"(
           float stepSize = (t1 - start) / float(LIGHT_STEPS);
           for (int i = 0; i < LIGHT_STEPS; i++) {
               vec3 pos = p + lightDir * (start + (float(i) + 0.5) * stepSize);
-              float h = length(pos - uPlanetCenter) - uInnerRadius;
-              if (h < 0.0) { dR = 1e6; dM = 1e6; dO = 1e6; dC = 1e6; return; }
+              float h = length(pos - uPlanetCenter) - uSurfaceRadius;
+              if (h < -1.0) { dR = 1e6; dM = 1e6; dO = 1e6; dC = 1e6; return; }
               dR += exp(-h / gHRayleigh) * stepSize;
               dM += exp(-h / gHMie) * stepSize;
               dO += ozoneDensity(h) * stepSize;
@@ -1934,8 +1977,8 @@ R"(
           
           // Compute camera altitude for adaptive behavior
           float camDist = length(uCamPos - uPlanetCenter);
-          float camAlt = max(camDist - uInnerRadius, 0.0);
-          float atmoThickness = uOuterRadius - uInnerRadius;
+          float camAlt = max(camDist - uSurfaceRadius, 0.0);
+          float atmoThickness = uOuterRadius - uSurfaceRadius;
           bool cameraInside = camDist < uOuterRadius;
           
           float tNear, tFar;
@@ -1966,7 +2009,7 @@ R"(
           
           for (int i = 0; i < PRIMARY_STEPS; i++) {
               vec3 pos = uCamPos + rayDir * (tNear + (float(i) + 0.5) * stepSize);
-              float h = max(length(pos - uPlanetCenter) - uInnerRadius, 0.0);
+              float h = max(length(pos - uPlanetCenter) - uSurfaceRadius, 0.0);
               
               float dR = exp(-h / gHRayleigh) * stepSize;
               float dM = exp(-h / gHMie) * stepSize;
@@ -2588,7 +2631,7 @@ R"(
   // 大气层散射壳 (Volumetric Scattering)
   void drawAtmosphere(const Mesh& sphereMesh, const Mat4& model, 
                       const Vec3& camPos, const Vec3& lightDir, 
-                      const Vec3& planetCenter, float innerRadius, float outerRadius, float time, int planetIdx) {
+                      const Vec3& planetCenter, float surfaceRadius, float outerRadius, float time, int planetIdx) {
     glUseProgram(atmoProg);
 
     Mat4 mvp = proj * view * model;
@@ -2599,6 +2642,7 @@ R"(
     GLint u_planetCenter = glGetUniformLocation(atmoProg, "uPlanetCenter");
     GLint u_innerRadius = glGetUniformLocation(atmoProg, "uInnerRadius");
     GLint u_outerRadius = glGetUniformLocation(atmoProg, "uOuterRadius");
+    GLint u_surfaceRadius = glGetUniformLocation(atmoProg, "uSurfaceRadius");
     GLint u_time = glGetUniformLocation(atmoProg, "uTime");
     GLint u_planetIdx = glGetUniformLocation(atmoProg, "uPlanetIdx");
 
@@ -2607,8 +2651,13 @@ R"(
     glUniform3f(u_camPos, camPos.x, camPos.y, camPos.z);
     glUniform3f(u_lightDir, lightDir.x, lightDir.y, lightDir.z);
     glUniform3f(u_planetCenter, planetCenter.x, planetCenter.y, planetCenter.z);
+    
+    // Slightly push inner radius into the planet to hide mesh-sphere gaps
+    // Increased safety margin to 0.998 to resolve edge cases in terminator shadowing
+    float innerRadius = surfaceRadius * 0.998f; 
     glUniform1f(u_innerRadius, innerRadius);
     glUniform1f(u_outerRadius, outerRadius);
+    glUniform1f(u_surfaceRadius, surfaceRadius);
     glUniform1f(u_time, time);
     glUniform1i(u_planetIdx, planetIdx);
 
