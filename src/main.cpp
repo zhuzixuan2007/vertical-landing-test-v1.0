@@ -1247,9 +1247,9 @@ int main() {
         // 大气压力膨胀系数: 高空膨胀 (Expansion) = 1.0 - Density_Ratio
         float expansion = (float)fmax(0.0, 1.0 - PhysicsSystem::get_air_density(rocket_state.altitude) / 1.225);
         
-        // 尾焰尺寸：Waterfall 级效果需要更大的 Box 代理来容纳扩散的羽流 (Sheath)
-        float plume_len = rh * 5.0f * (0.5f + thrust * 0.5f) * (1.0f + expansion * 1.2f);
-        float plume_dia = rw_3d * 6.0f * (1.1f + expansion * 4.5f);
+        // 尾焰尺寸：缩短长度，增加粗细感，移除“长矛”感
+        float plume_len = rh * 3.2f * (0.5f + thrust * 0.5f) * (1.0f + expansion * 1.0f);
+        float plume_dia = rw_3d * 6.5f * (1.1f + expansion * 4.0f);
         
         // 尾焰渲染锚点：从发动机喷口向后延伸
         Vec3 plumePos = engNozzlePos - rocketDir * (plume_len * 0.5f);

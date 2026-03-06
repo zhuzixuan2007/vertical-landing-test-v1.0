@@ -2524,40 +2524,30 @@ R"(
           if (r < sheathFlare) {
             float normR = r / coreFlare;
             
-            // 1. Base Physic-Informed Density
-            float d = exp(-normR * 5.0) * pow(z, 0.3) * (1.05 - normR);
+            // 1. Base Physic-Informed Density (Solid Core Focus)
+            float d = exp(-normR * 5.5) * pow(z, 0.4) * (1.1 - normR);
             d = max(0.0, d);
 
-            // 2. Conical Shock Fronts (True Waterfall Pattern)
-            // Instead of sine beads, use V-shaped shocks
-            float machZ = (1.0 - z);
-            float shockGrad = abs(fract(machZ * 8.0 + normR * 0.4 - uTime * 2.5) - 0.5) * 2.0;
-            float shock = smoothstep(0.15, 0.0, shockGrad);
-            d += shock * (1.1 - normR) * 0.7 * z;
-            
-            // 3. Anisotropic Streaking & FBM Turbulence
+            // 2. Anisotropic Streaking & FBM Turbulence
             // Vertical streaks + fluid turbulence
-            float streaks = noise(vec3(atan(p.x, p.z) * 4.0, p.y * 30.0, uTime * 2.0));
-            float turb = fbm(p * 10.0 - vec3(0, uTime * 12.0, 0));
-            d *= (0.5 + 0.5 * turb + 0.3 * streaks);
+            float streaks = noise(vec3(atan(p.x, p.z) * 5.0, p.y * 35.0, uTime * 2.5));
+            float turb = fbm(p * 12.0 - vec3(0, uTime * 14.0, 0));
+            d *= (0.6 + 0.4 * turb + 0.2 * streaks);
             
-            // 4. View-Dependent Alpha Falloff (Ghosting edges)
-            // Real plumes look thinner when looking through the edges
-            float cosTheta = abs(dot(normalize(p), rd));
-            d *= (0.4 + 0.6 * pow(1.0 - normR, 2.0));
+            // 3. View-Dependent Alpha Falloff (Improved Side-View Blending)
+            // Softening the edges based on view angle vs local radial distance
+            float edgeSoftness = smoothstep(0.0, 0.3, 1.0 - normR);
+            d *= (0.3 + 0.7 * edgeSoftness);
             
-            // 5. High-Dynamic Color Profiling
-            vec3 core = vec3(0.9, 0.95, 1.1);  // Blue-hot internal
-            vec3 mid = vec3(1.0, 0.5, 0.1);   // Primary combustion
-            vec3 outer = vec3(0.6, 0.15, 0.05); // Deep red cooling
+            // 4. High-Dynamic Color Profiling (Solid Core)
+            vec3 core = vec3(1.0, 1.0, 0.9);   // White-hot core
+            vec3 mid = vec3(1.0, 0.4, 0.02);   // Combustion orange
+            vec3 outer = vec3(0.4, 0.08, 0.02); // Deep red cooling
             
-            vec3 col = mix(outer, mid, smoothstep(0.05, 0.3, d));
-            col = mix(col, core, smoothstep(0.3, 0.8, d));
+            vec3 col = mix(outer, mid, smoothstep(0.05, 0.4, d));
+            col = mix(col, core, smoothstep(0.4, 1.0, d));
             
-            // Mach core glow (Scientifically: hottest at shock intersections)
-            col += vec3(0.3, 0.6, 1.0) * shock * (1.0 - normR) * 2.0 * z;
-            
-            float alpha = d * stepSize * 35.0; // Boost density
+            float alpha = d * stepSize * 45.0; // Higher density for solid look
             finalCol.rgb += (1.0 - finalCol.a) * col * alpha;
             finalCol.a += (1.0 - finalCol.a) * alpha;
           }
