@@ -1703,9 +1703,9 @@ int main() {
       renderer->drawText(mode_x, mode_y, "MANUAL", 0.020f, 0.1f, 0.1f, 0.1f, 0.9f, false, Renderer::CENTER);
     }
 
-    // --- 7. Mission Status (Far Right) ---
-    renderer->drawText(num_x - 0.08f, 0.80f, "[MISSION CONTROL]", 0.016f, 0.4f, 1.0f, 0.4f, hud_opacity);
-    renderer->drawText(num_x - 0.08f, 0.76f, rocket_state.mission_msg.c_str(), 0.015f, 0.8f, 0.8f, 1.0f, hud_opacity);
+    // --- 7. Mission Status (Top Center) ---
+    renderer->drawText(0.0f, 0.85f, "[MISSION CONTROL]", 0.016f, 0.4f, 1.0f, 0.4f, hud_opacity, true, Renderer::CENTER);
+    renderer->drawText(0.0f, 0.80f, rocket_state.mission_msg.c_str(), 0.015f, 0.8f, 0.8f, 1.0f, hud_opacity, true, Renderer::CENTER);
 
     // --- 8. Stage Indicator (Below mode indicator) ---
     if (rocket_state.total_stages > 1) {
