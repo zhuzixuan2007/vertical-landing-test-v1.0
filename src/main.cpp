@@ -1258,11 +1258,12 @@ int main() {
               r3d->drawMesh(launchPadMesh, padModel, 0.4f, 0.4f, 0.42f, 1.0f, 0.2f);
           } else {
               float pad_w = rw_3d * 20.0f;
-              float pad_h = rh * 0.2f;
+              float pad_h = rh * 0.4f; // Increased pad height to bury it deeper
               
               Mat4 baseMdl = Mat4::scale(Vec3(pad_w, pad_h, pad_w));
               baseMdl = padRot * baseMdl;
-              baseMdl = Mat4::translate(padCenter - padUp * (pad_h * 0.5f)) * baseMdl;
+              // Bury the bottom half of the pad base into the planet to eliminate gaps
+              baseMdl = Mat4::translate(padCenter - padUp * (pad_h * 0.45f)) * baseMdl;
               r3d->drawMesh(rocketBox, baseMdl, 0.4f, 0.4f, 0.4f, 1.0f, 0.1f);
               
               float tower_h = rh * 1.5f;
