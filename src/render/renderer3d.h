@@ -2525,29 +2525,37 @@ R"(
             float normR = r / coreFlare;
             
             // 1. Base Physic-Informed Density (Solid Core Focus)
-            float d = exp(-normR * 5.5) * pow(z, 0.4) * (1.1 - normR);
+            float d = exp(-normR * 6.0) * pow(z, 0.5) * (1.1 - normR);
+            
+            // Tail Tapering: Smooth falloff at the bottom (z=0)
+            float tailTaper = smoothstep(0.0, 0.25, z);
+            d *= tailTaper;
             d = max(0.0, d);
 
-            // 2. Anisotropic Streaking & FBM Turbulence
-            // Vertical streaks + fluid turbulence
-            float streaks = noise(vec3(atan(p.x, p.z) * 5.0, p.y * 35.0, uTime * 2.5));
-            float turb = fbm(p * 12.0 - vec3(0, uTime * 14.0, 0));
-            d *= (0.6 + 0.4 * turb + 0.2 * streaks);
+            // 2. High-Velocity Dynamics & FBM Turbulence
+            // Vertical streaks + multi-layer high-speed fluid turbulence
+            float streaks = noise(vec3(atan(p.x, p.z) * 6.0, p.y * 40.0, uTime * 35.0)); // Ultra-fast
+            float turb = fbm(p * 15.0 - vec3(0, uTime * 45.0, 0)); // High-velocity FBM
+            d *= (0.5 + 0.4 * turb + 0.3 * streaks);
             
-            // 3. View-Dependent Alpha Falloff (Improved Side-View Blending)
-            // Softening the edges based on view angle vs local radial distance
-            float edgeSoftness = smoothstep(0.0, 0.3, 1.0 - normR);
-            d *= (0.3 + 0.7 * edgeSoftness);
+            // 3. View-Dependent Alpha Falloff (Improved Side-View)
+            float edgeSoftness = smoothstep(0.0, 0.4, 1.0 - normR);
+            d *= (0.2 + 0.8 * edgeSoftness);
             
-            // 4. High-Dynamic Color Profiling (Solid Core)
-            vec3 core = vec3(1.0, 1.0, 0.9);   // White-hot core
-            vec3 mid = vec3(1.0, 0.4, 0.02);   // Combustion orange
-            vec3 outer = vec3(0.4, 0.08, 0.02); // Deep red cooling
+            // 4. Dynamic Pulse/Flicker
+            float flicker = 0.95 + 0.1 * hash(uTime * 123.45); // High-frequency intensity flicker
+            float pulse = 1.0 + 0.05 * sin(uTime * 80.0); // Acoustic-style vibration
+            d *= (flicker * pulse);
+
+            // 5. High-Dynamic Color Profiling
+            vec3 core = vec3(1.1, 1.1, 1.0);   // Over-bright core
+            vec3 mid = vec3(1.0, 0.5, 0.05);   // Primary orange
+            vec3 outer = vec3(0.5, 0.1, 0.03); // Red edge
             
-            vec3 col = mix(outer, mid, smoothstep(0.05, 0.4, d));
-            col = mix(col, core, smoothstep(0.4, 1.0, d));
+            vec3 col = mix(outer, mid, smoothstep(0.05, 0.45, d));
+            col = mix(col, core, smoothstep(0.45, 1.0, d));
             
-            float alpha = d * stepSize * 45.0; // Higher density for solid look
+            float alpha = d * stepSize * 55.0; // Boosted density for solid feeling
             finalCol.rgb += (1.0 - finalCol.a) * col * alpha;
             finalCol.a += (1.0 - finalCol.a) * alpha;
           }
