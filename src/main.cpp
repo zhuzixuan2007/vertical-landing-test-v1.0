@@ -60,7 +60,10 @@ void Report_Status(const RocketState& state, const ControlInput& input) {
   cout << "----------------------------------" << endl;
   cout << "[Alt]: " << state.altitude << " m | [Vert_Vel]: " << state.velocity << " m/s";
   
-  if (!state.auto_mode && state.altitude > 100000.0 && input.throttle < 0.01) {
+  double surface_speed = std::sqrt(state.velocity * state.velocity + state.local_vx * state.local_vx);
+  bool is_parked = (state.status == PRE_LAUNCH || state.status == LANDED) && surface_speed < 0.1;
+
+  if (!state.auto_mode && (state.altitude > 100000.0 || is_parked) && input.throttle < 0.01) {
       cout << " | [WARP READY]" << endl;
   } else {
       cout << endl;
@@ -415,8 +418,10 @@ int main() {
 
     // --- 时间加速逻辑 ---
     static int time_warp = 1;
-    // 条件：手动模式、没开推力(或者没燃料了)、处于真空(真空设为>100000m) 才可以开启极速加速 (5,6,7,8)
-    bool can_super_warp = (!rocket_state.auto_mode && rocket_state.altitude > 100000.0 && (rocket_state.thrust_power == 0 || rocket_state.fuel <= 0));
+    // 条件：手动模式、没开推力(或者没燃料了)、处于真空(真空设为>100000m) 或者是 在地面且速度极低 才可以开启极速加速 (5,6,7,8)
+    double surface_speed = std::sqrt(rocket_state.velocity * rocket_state.velocity + rocket_state.local_vx * rocket_state.local_vx);
+    bool is_parked = (rocket_state.status == PRE_LAUNCH || rocket_state.status == LANDED) && surface_speed < 0.1;
+    bool can_super_warp = (!rocket_state.auto_mode && (rocket_state.thrust_power <= 0.01 || rocket_state.fuel <= 0) && (rocket_state.altitude > 100000.0 || is_parked));
 
     if (rocket_state.auto_mode) {
       if (glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_KP_1) == GLFW_PRESS) time_warp = 1;
@@ -461,7 +466,22 @@ int main() {
 
     // --- 物理更新 ---
     if (time_warp > 1000) {
-        // 超级时间加速！绕过气动和引擎模拟，直接当作质点切分迭代
+        // 超级时间加速！
+        if (is_parked) {
+            // 确保坐标在加速前已同步到表面且速度归零
+            if (rocket_state.status != PRE_LAUNCH && rocket_state.status != LANDED) {
+                rocket_state.status = LANDED;
+            }
+            CelestialBody& cur_b = SOLAR_SYSTEM[current_soi_index];
+            double theta = cur_b.prime_meridian_epoch + (rocket_state.sim_time * 2.0 * PI / cur_b.rotation_period);
+            rocket_state.surf_px = rocket_state.px * std::cos(-theta) - rocket_state.py * std::sin(-theta);
+            rocket_state.surf_py = rocket_state.px * std::sin(-theta) + rocket_state.py * std::cos(-theta);
+            rocket_state.surf_pz = rocket_state.pz;
+            
+            rocket_state.vx = 0; rocket_state.vy = 0; rocket_state.vz = 0;
+            rocket_state.velocity = 0; rocket_state.local_vx = 0;
+            rocket_state.ang_vel = 0; rocket_state.ang_vel_z = 0;
+        }
         PhysicsSystem::FastGravityUpdate(rocket_state, rocket_config, dt * time_warp);
     } else {
         // 普通循环执行实现加速
