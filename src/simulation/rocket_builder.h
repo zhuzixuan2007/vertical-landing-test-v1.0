@@ -5,14 +5,15 @@
 // ==========================================================
 
 #include "core/rocket_state.h"
-#include "render/renderer3d.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
 #include <string>
 
-// 前置声明
+// Forward declarations
 class Renderer;
+struct RocketAssembly;
+namespace StageManager { void BuildStages(const RocketAssembly& assembly, RocketConfig& config); }
 
 // ==========================================================
 // Part Categories
@@ -205,10 +206,14 @@ struct RocketAssembly {
         cfg.dry_mass = total_dry_mass;
         cfg.diameter = max_diameter;
         cfg.height = total_height;
-        cfg.stages = 1; // simplified single-stage for physics
+        cfg.stages = 1;
         cfg.specific_impulse = avg_isp;
         cfg.cosrate = total_consumption;
         cfg.nozzle_area = 0.5 * (max_diameter / 3.7); // scaled nozzle
+        
+        // Build multi-stage configuration using StageManager
+        StageManager::BuildStages(*this, cfg);
+        
         return cfg;
     }
 

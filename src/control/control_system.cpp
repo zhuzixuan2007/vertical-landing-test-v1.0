@@ -12,7 +12,7 @@ void UpdateAutoPilot(RocketState& state, const RocketConfig& config, ControlInpu
     input.torque_cmd_z = state.pid_att_z.update(0.0, state.angle_z, dt);
 
     double max_thrust_vac = config.specific_impulse * G0 * config.cosrate;
-    double current_total_mass = config.dry_mass + state.fuel;
+    double current_total_mass = config.dry_mass + state.fuel + config.upper_stages_mass;
     double current_r = std::sqrt(state.px * state.px + state.py * state.py);
     double current_g = PhysicsSystem::get_gravity(current_r);
 

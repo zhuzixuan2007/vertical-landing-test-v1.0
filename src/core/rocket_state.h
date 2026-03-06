@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <iostream>
 
 // Constants
 constexpr double PI = 3.14159265358979323846;
@@ -114,8 +115,23 @@ struct SmokeParticle {
     bool active;
 };
 
+// Per-stage physical configuration
+struct StageConfig {
+    double dry_mass = 0;          // Dry mass of this stage (kg)
+    double fuel_capacity = 0;     // Total fuel capacity (kg)
+    double specific_impulse = 0;  // Weighted ISP (seconds)
+    double consumption_rate = 0;  // Total fuel consumption rate (kg/s)
+    double thrust = 0;            // Total thrust (N)
+    double height = 0;            // Height of this stage (m)
+    double diameter = 0;          // Max diameter (m)
+    double nozzle_area = 0;       // Nozzle area
+    int part_start_index = 0;     // Start index in assembly parts list
+    int part_end_index = 0;       // End index (exclusive) in assembly parts list
+};
+
 // Static Rocket Configuration (immutable during flight)
 struct RocketConfig {
+    // Current active stage shorthand (synced by StageManager)
     double dry_mass;
     double diameter;
     double height;
@@ -123,6 +139,12 @@ struct RocketConfig {
     double specific_impulse;
     double cosrate; // fuel_consumption_rate / mass flow rate parameter
     double nozzle_area;
+
+    // Multi-stage configurations (stage 0 = bottom, fires first)
+    std::vector<StageConfig> stage_configs;
+
+    // Total mass of stages above the active one (payload for current stage)
+    double upper_stages_mass = 0;
 };
 
 // Control Inputs (actuators driven by Player/AI)
@@ -136,6 +158,12 @@ struct ControlInput {
 struct RocketState {
     // Basic properties
     double fuel = 0.0;
+    
+    // Multi-stage state
+    int current_stage = 0;              // Active stage index (0 = bottom, fires first)
+    int total_stages = 1;               // Total number of stages
+    std::vector<double> stage_fuels;    // Remaining fuel per stage
+    double jettisoned_mass = 0.0;       // Cumulative mass of jettisoned stages
     
     // Position/Velocity relative to current SOI origin
     double px = 0.0, py = EARTH_RADIUS + 0.1, pz = 0.0;

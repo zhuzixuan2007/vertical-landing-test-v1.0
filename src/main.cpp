@@ -13,6 +13,7 @@
 #include "control/control_system.h"
 #include "render/renderer_2d.h"
 #include "simulation/orbit_physics.h"
+#include "simulation/stage_manager.h"
 
 using namespace std;
 
@@ -355,11 +356,25 @@ int main() {
       // 使用加载的状态
       rocket_state = loaded_state;
       control_input = loaded_input;
+      // Sync config to loaded stage
+      StageManager::SyncActiveConfig(rocket_config, rocket_state.current_stage);
   } else {
       // 新游戏初始化
       rocket_state.fuel = builder_state.assembly.total_fuel;
       rocket_state.status = PRE_LAUNCH;
       rocket_state.mission_msg = "READY ON PAD - PRESS SPACE TO LAUNCH";
+      
+      // Initialize multi-stage fuel distribution
+      rocket_state.total_stages = rocket_config.stages;
+      rocket_state.current_stage = 0;
+      rocket_state.stage_fuels.clear();
+      for (int i = 0; i < (int)rocket_config.stage_configs.size(); i++) {
+          rocket_state.stage_fuels.push_back(rocket_config.stage_configs[i].fuel_capacity);
+      }
+      // Set initial fuel to stage 0’s capacity
+      if (!rocket_state.stage_fuels.empty()) {
+          rocket_state.fuel = rocket_state.stage_fuels[0];
+      }
       
       // Initialize surface coordinates exactly at the planet's radius
       rocket_state.surf_px = 0.0;
@@ -414,6 +429,16 @@ int main() {
       }
     }
     space_was_pressed = space_now;
+
+    // --- G 键手动分级 (Manual Stage Separation) ---
+    static bool g_was_pressed = false;
+    bool g_now = glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS;
+    if (g_now && !g_was_pressed) {
+        if (rocket_state.status == ASCEND || rocket_state.status == DESCEND) {
+            StageManager::SeparateStage(rocket_state, rocket_config);
+        }
+    }
+    g_was_pressed = g_now;
 
     // --- C 键切换 3D 视角 ---
     bool c_now = glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS;
@@ -598,6 +623,14 @@ int main() {
           if (rocket_state.auto_mode) ControlSystem::UpdateAutoPilot(rocket_state, rocket_config, control_input, dt);
           else ControlSystem::UpdateManualControl(rocket_state, control_input, manual, dt);
           PhysicsSystem::Update(rocket_state, rocket_config, control_input, dt);
+          
+          // Auto-staging: when current stage fuel is depleted, advance to next
+          if (StageManager::IsCurrentStageEmpty(rocket_state) 
+              && rocket_state.current_stage < rocket_state.total_stages - 1
+              && (rocket_state.status == ASCEND || rocket_state.status == DESCEND)) {
+              StageManager::SeparateStage(rocket_state, rocket_config);
+          }
+          
           if (rocket_state.status == LANDED || rocket_state.status == CRASHED) break;
         }
 
@@ -1260,17 +1293,29 @@ int main() {
         float total_h_3d = (float)rocket_config.height;
         float scale_3d = rh / fmaxf(total_h_3d, 1.0f); // meters-to-world scale
         Vec3 rocketBottom = renderRocketPos - rocketDir * (rh * 0.5f);
+        
+        // Determine which parts to render (skip jettisoned stages)
+        int render_start = 0;
+        if (rocket_state.current_stage < (int)rocket_config.stage_configs.size()) {
+            render_start = rocket_config.stage_configs[rocket_state.current_stage].part_start_index;
+        }
+        // Recalculate stack_y offset for rendering from render_start
+        float y_offset_jettison = 0;
+        for (int pi = 0; pi < render_start && pi < (int)assembly.parts.size(); pi++) {
+            y_offset_jettison += PART_CATALOG[assembly.parts[pi].def_id].height;
+        }
 
-        for (int pi = 0; pi < (int)assembly.parts.size(); pi++) {
+        for (int pi = render_start; pi < (int)assembly.parts.size(); pi++) {
           const PlacedPart& pp = assembly.parts[pi];
           const PartDef& def = PART_CATALOG[pp.def_id];
           float part_h_3d = def.height * scale_3d;
           float part_w_3d = (def.diameter / fmaxf((float)rocket_config.diameter, 1.0f)) * rw_3d;
-          float part_center_y = pp.stack_y * scale_3d + part_h_3d * 0.5f;
+          float adjusted_stack_y = (pp.stack_y - y_offset_jettison) * scale_3d;
+          float part_center_y = adjusted_stack_y + part_h_3d * 0.5f;
           Vec3 partPos = rocketBottom + rocketDir * part_center_y;
           // Bottom and top edges of this part's slot
-          Vec3 partBot = rocketBottom + rocketDir * (pp.stack_y * scale_3d);
-          Vec3 partTop = rocketBottom + rocketDir * (pp.stack_y * scale_3d + part_h_3d);
+          Vec3 partBot = rocketBottom + rocketDir * adjusted_stack_y;
+          Vec3 partTop = rocketBottom + rocketDir * (adjusted_stack_y + part_h_3d);
 
           if (def.category == CAT_NOSE_CONE) {
             // Lower 40%: cylinder body flush with part below
@@ -1661,6 +1706,50 @@ int main() {
     // --- 7. Mission Status (Far Right) ---
     renderer->drawText(num_x - 0.08f, 0.80f, "[MISSION CONTROL]", 0.016f, 0.4f, 1.0f, 0.4f, hud_opacity);
     renderer->drawText(num_x - 0.08f, 0.76f, rocket_state.mission_msg.c_str(), 0.015f, 0.8f, 0.8f, 1.0f, hud_opacity);
+
+    // --- 8. Stage Indicator (Below mode indicator) ---
+    if (rocket_state.total_stages > 1) {
+        float stage_x = 0.88f;
+        float stage_y = mode_y - 0.06f;
+        float stage_w = 0.15f;
+        float stage_h = 0.04f;
+        renderer->addRect(stage_x, stage_y, stage_w, stage_h, 0.05f, 0.05f, 0.1f, 0.7f);
+        
+        // Stage number display
+        char stage_str[32];
+        snprintf(stage_str, sizeof(stage_str), "STG %d/%d", rocket_state.current_stage + 1, rocket_state.total_stages);
+        
+        float sr = 0.3f, sg = 0.8f, sb = 1.0f;
+        if (rocket_state.fuel < 1000 && rocket_state.current_stage < rocket_state.total_stages - 1) {
+            // Blink warning when fuel low and can still stage
+            float blink = 0.5f + 0.5f * sinf((float)glfwGetTime() * 6.0f);
+            sr = 1.0f * blink; sg = 0.5f * blink; sb = 0.1f;
+        }
+        renderer->drawText(stage_x, stage_y, stage_str, 0.016f, sr, sg, sb, 0.9f, false, Renderer::CENTER);
+        
+        // Per-stage fuel bars (small bars below stage indicator)
+        float bar_y_start = stage_y - 0.04f;
+        float bar_w = stage_w * 0.8f;
+        float bar_h = 0.012f;
+        for (int si = 0; si < rocket_state.total_stages; si++) {
+            float by = bar_y_start - si * (bar_h + 0.005f);
+            // Background
+            renderer->addRect(stage_x, by, bar_w, bar_h, 0.15f, 0.15f, 0.15f, 0.5f);
+            // Fill
+            if (si < (int)rocket_state.stage_fuels.size() && si < (int)rocket_config.stage_configs.size()) {
+                float cap = (float)rocket_config.stage_configs[si].fuel_capacity;
+                float ratio = (cap > 0) ? (float)(rocket_state.stage_fuels[si] / cap) : 0.0f;
+                ratio = fmaxf(0.0f, fminf(1.0f, ratio));
+                float fill = bar_w * ratio;
+                float fx = stage_x - bar_w / 2.0f + fill / 2.0f;
+                float fr = (si == rocket_state.current_stage) ? 0.2f : 0.4f;
+                float fg = (si == rocket_state.current_stage) ? 1.0f : 0.5f;
+                float fb = (si == rocket_state.current_stage) ? 0.4f : 0.3f;
+                if (si < rocket_state.current_stage) { fr = 0.3f; fg = 0.3f; fb = 0.3f; } // jettisoned
+                renderer->addRect(fx, by, fill, bar_h * 0.7f, fr, fg, fb, 0.8f);
+            }
+        }
+    }
     
     // 保存指示器 (每次保存后闪烁3秒)
     static int last_save_frame = -1000;

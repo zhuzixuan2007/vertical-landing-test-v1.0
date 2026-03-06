@@ -1,4 +1,5 @@
 #include "physics_system.h"
+#include "simulation/stage_manager.h"
 #include <algorithm>
 #include <iostream>
 
@@ -492,7 +493,8 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     state.solar_occlusion = CalculateSolarOcclusion(state);
 
     // B. Force Analysis
-    double total_mass = config.dry_mass + state.fuel;
+    // Total mass = current stage dry mass + current stage fuel + all upper stages
+    double total_mass = config.dry_mass + state.fuel + config.upper_stages_mass;
 
     // We will do Gravity inside calc_accel directly now
 
@@ -507,6 +509,10 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
 
         double m_dot = state.thrust_power / (config.specific_impulse * G0);
         state.fuel -= m_dot * dt;
+        // Sync stage_fuels
+        if (state.current_stage < (int)state.stage_fuels.size()) {
+            state.stage_fuels[state.current_stage] = state.fuel;
+        }
         state.fuel_consumption_rate = m_dot; 
     } else {
         state.thrust_power = 0;
@@ -803,7 +809,7 @@ void FastGravityUpdate(RocketState& state, const RocketConfig& config, double dt
     double dt_step = std::max(5.0, dt_total / 200.0); 
     double t_remaining = dt_total;
     
-    double total_mass = config.dry_mass + state.fuel;
+    double total_mass = config.dry_mass + state.fuel + config.upper_stages_mass;
 
     while (t_remaining > 0) {
         double dt = std::min(t_remaining, dt_step);

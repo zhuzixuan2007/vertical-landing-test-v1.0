@@ -44,6 +44,7 @@ set(SOURCES
     src/main.cpp
     src/physics/physics_system.cpp
     src/control/control_system.cpp
+    src/simulation/stage_manager.cpp
     vendor/glad/glad.c
 )
 

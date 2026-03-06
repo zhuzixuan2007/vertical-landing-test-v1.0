@@ -35,6 +35,12 @@ struct SaveData {
     int current_soi;
     bool auto_mode;
     
+    // Multi-stage state
+    int current_stage;
+    int total_stages;
+    double jettisoned_mass;
+    std::vector<double> stage_fuels;
+    
     // 控制输入
     double throttle;
     double torque_cmd;
@@ -53,7 +59,7 @@ bool SaveGame(const RocketAssembly& assembly, const RocketState& state,
     }
     
     // 写入版本号
-    file << "VERSION 1.0\n";
+    file << "VERSION 2.0\n";
     
     // 保存火箭装配
     file << "PARTS " << assembly.parts.size() << "\n";
@@ -77,6 +83,15 @@ bool SaveGame(const RocketAssembly& assembly, const RocketState& state,
     file << (int)state.status << "\n";
     file << current_soi_index << "\n";
     file << (state.auto_mode ? 1 : 0) << "\n";
+    
+    // 保存多级状态
+    file << "STAGES\n";
+    file << state.current_stage << " " << state.total_stages << "\n";
+    file << state.jettisoned_mass << "\n";
+    file << (int)state.stage_fuels.size() << "\n";
+    for (int i = 0; i < (int)state.stage_fuels.size(); i++) {
+        file << state.stage_fuels[i] << "\n";
+    }
     
     // 保存控制输入
     file << "CONTROL\n";
@@ -154,13 +169,39 @@ bool LoadGame(RocketAssembly& assembly, RocketState& state,
         std::getline(file, line); // 消耗换行符
     }
     
-    // 读取控制输入
+    // 读取多级状态 (VERSION 2.0+)
+    std::streampos pos = file.tellg();
     std::getline(file, line);
-    if (line.find("CONTROL") != std::string::npos) {
+    if (line.find("STAGES") != std::string::npos) {
+        file >> state.current_stage >> state.total_stages;
+        file >> state.jettisoned_mass;
+        int num_stage_fuels;
+        file >> num_stage_fuels;
+        state.stage_fuels.clear();
+        for (int i = 0; i < num_stage_fuels; i++) {
+            double sf;
+            file >> sf;
+            state.stage_fuels.push_back(sf);
+        }
+        std::getline(file, line); // consume newline
+        
+        // Read CONTROL section
+        std::getline(file, line);
+    } else if (line.find("CONTROL") != std::string::npos) {
+        // Version 1.0: no stages section, this IS the CONTROL line
+        state.current_stage = 0;
+        state.total_stages = 1;
+        state.jettisoned_mass = 0;
+        state.stage_fuels.clear();
+        state.stage_fuels.push_back(state.fuel);
+    }
+    
+    // Read control values (CONTROL header already consumed above)
+    if (line.find("CONTROL") != std::string::npos || true) {
         file >> input.throttle;
         file >> input.torque_cmd;
         file >> input.torque_cmd_z;
-        std::getline(file, line); // 消耗换行符
+        std::getline(file, line); // consume newline
     }
     
     // 读取时间戳(可选)

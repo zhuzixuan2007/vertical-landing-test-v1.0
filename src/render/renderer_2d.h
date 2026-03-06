@@ -39,7 +39,7 @@ inline float hash11(float p) {
 // Renderer Class: modern OpenGL GUI/HUD
 // ==========================================
 
-const char *vertexShaderSource2D = R"(
+static const char *vertexShaderSource2D = R"(
     #version 330 core
     layout (location = 0) in vec2 aPos;
     layout (location = 1) in vec4 aColor;
@@ -50,7 +50,7 @@ const char *vertexShaderSource2D = R"(
     }
 )";
 
-const char *fragmentShaderSource2D = R"(
+static const char *fragmentShaderSource2D = R"(
     #version 330 core
     out vec4 FragColor;
     in vec4 ourColor;
