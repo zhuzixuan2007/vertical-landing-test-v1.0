@@ -1,0 +1,54 @@
+﻿閫傜敤浜?.NET Framework MSBuild 鐗堟湰 18.0.5+e22287bf1
+
+  glfw.vcxproj -> C:\antigravity_code\RocketSim3D\build\_deps\glfw-build\src\Release\glfw3.lib
+  main.cpp
+C:\antigravity_code\RocketSim3D\src\math\math3d.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\render\renderer3d.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\render\renderer3d.h(1370,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\render\renderer3d.h(2648,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\render\model_loader.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\render\renderer_2d.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\simulation\orbit_physics.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\simulation\rocket_builder.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\simulation\rocket_builder.h(81,78): warning C4305: 鈥滃垵濮嬪寲鈥? 浠庘€渄ouble鈥濆埌鈥渇loat鈥濇埅鏂?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\save_system.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\menu_system.h(1,1): warning C4819: 璇ユ枃浠跺寘鍚笉鑳藉湪褰撳墠浠ｇ爜椤?936)涓〃绀虹殑瀛楃銆傝灏嗚鏂囦欢淇濆瓨涓?Unicode 鏍煎紡浠ラ槻姝㈡暟鎹涪澶?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+  (compiling source file '../src/main.cpp')
+  
+C:\antigravity_code\RocketSim3D\src\main.cpp(212,5): error C2065: 鈥渂k_now鈥? 鏈０鏄庣殑鏍囪瘑绗?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(237,52): error C2065: 鈥渂k_now鈥? 鏈０鏄庣殑鏍囪瘑绗?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(238,15): error C2065: 鈥渂k_now鈥? 鏈０鏄庣殑鏍囪瘑绗?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(326,10): error C2039: "endTAAPass": 涓嶆槸 "Renderer3D" 鐨勬垚鍛?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+      C:\antigravity_code\RocketSim3D\src\render\renderer3d.h(300,7):
+      鍙傝鈥淩enderer3D鈥濈殑澹版槑
+  
+C:\antigravity_code\RocketSim3D\src\main.cpp(327,10): error C2039: "renderToScreen": 涓嶆槸 "Renderer3D" 鐨勬垚鍛?[C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+      C:\antigravity_code\RocketSim3D\src\render\renderer3d.h(300,7):
+      鍙傝鈥淩enderer3D鈥濈殑澹版槑
+  
+C:\antigravity_code\RocketSim3D\src\main.cpp(631,24): warning C4244: 鈥滃垵濮嬪寲鈥? 浠庘€渄ouble鈥濊浆鎹㈠埌鈥渇loat鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(642,68): warning C4267: 鈥?鈥? 浠庘€渟ize_t鈥濊浆鎹㈠埌鈥渋nt鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(885,19): warning C4244: 鈥滃垵濮嬪寲鈥? 浠庘€渄ouble鈥濊浆鎹㈠埌鈥渇loat鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(892,90): warning C4244: 鈥滃弬鏁扳€? 浠庘€渄ouble鈥濊浆鎹㈠埌鈥渇loat鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(894,68): warning C4244: 鈥滃弬鏁扳€? 浠庘€渄ouble鈥濊浆鎹㈠埌鈥渇loat鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]
+C:\antigravity_code\RocketSim3D\src\main.cpp(1177,27): warning C4244: 鈥滃垵濮嬪寲鈥? 浠庘€渄ouble鈥濊浆鎹㈠埌鈥渇loat鈥濓紝鍙兘涓㈠け鏁版嵁 [C:\antigravity_code\RocketSim3D\build\RocketSim3D.vcxproj]

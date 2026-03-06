@@ -241,6 +241,8 @@ struct BuilderState {
 
     // Camera auto-orbit
     float orbit_angle = 0.0f;
+    float orbit_pitch = 0.2f;    // Added for 3D camera
+    float cam_dist = 15.0f;      // Added for 3D camera zoom
     float orbit_speed = 0.3f;
 
     // Animation
@@ -277,7 +279,8 @@ inline void drawBuilderInt(Renderer* r, float x, float y, int value, float size,
 // ==========================================================
 inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
     // ---- Background ----
-    r->addRect(0.0f, 0.0f, 2.0f, 2.0f, 0.05f, 0.06f, 0.10f, 1.0f);
+    // Make background completely transparent to see the 3D workshop
+    // r->addRect(0.0f, 0.0f, 2.0f, 2.0f, 0.05f, 0.06f, 0.10f, 0.0f);
 
     // Subtle star field
     for (int i = 0; i < 120; i++) {
@@ -286,12 +289,13 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
         float ss = 0.001f + hash11(i * 2131) * 0.003f;
         float sa = 0.3f + hash11(i * 991) * 0.5f;
         // Twinkle effect
-        sa *= 0.7f + 0.3f * sinf(time * (1.0f + hash11(i * 443) * 2.0f) + hash11(i * 661) * 6.28f);
-        r->addRect(sx, sy, ss, ss, 0.8f, 0.85f, 1.0f, sa);
+        sa *= 0.5f + 0.3f * sinf(time * (1.0f + hash11(i * 443) * 2.0f) + hash11(i * 661) * 6.28f);
+        // Reduce star alpha to not interfere too heavily with the 3D scene
+        r->addRect(sx, sy, ss, ss, 0.8f, 0.85f, 1.0f, sa * 0.2f);
     }
 
     // ---- Title Bar ----
-    r->addRect(0.0f, 0.92f, 2.0f, 0.12f, 0.08f, 0.10f, 0.18f, 0.85f);
+    r->addRect(0.0f, 0.92f, 2.0f, 0.12f, 0.08f, 0.10f, 0.18f, 0.5f);
     drawBuilderText(r, -0.42f, 0.925f, "ROCKET ASSEMBLY", 0.028f, 0.3f, 0.85f, 1.0f);
 
     // ---- Left Panel: Part Catalog ----
@@ -299,9 +303,9 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
     float panel_width = 0.55f;
     float panel_right = panel_left + panel_width;
 
-    // Panel background
+    // Panel background (Semi-transparent)
     r->addRect(panel_left + panel_width / 2.0f, 0.15f, panel_width, 1.40f,
-               0.07f, 0.08f, 0.13f, 0.80f);
+               0.07f, 0.08f, 0.13f, 0.40f);
 
     // Category tabs
     float tab_y = 0.82f;
@@ -371,9 +375,9 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
     float asm_panel_x = 0.62f;
     float asm_panel_w = 0.35f;
 
-    // Panel background
+    // Panel background (Semi-transparent)
     r->addRect(asm_panel_x, 0.15f, asm_panel_w, 1.40f,
-               0.07f, 0.08f, 0.13f, 0.80f);
+               0.07f, 0.08f, 0.13f, 0.40f);
 
     // Header
     drawBuilderText(r, asm_panel_x - 0.13f, 0.82f, "ASSEMBLY", 0.012f,
@@ -417,77 +421,10 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
     }
 
     // ---- Center: 3D Rocket Preview (drawn as 2D schematic) ----
-    float preview_cx = 0.08f;
-    float preview_cy = 0.20f;
-    float preview_scale = 0.005f; // meters to screen units
-
-    if (!bs.assembly.parts.empty()) {
-        float total_h_screen = bs.assembly.total_height * preview_scale;
-        // Auto-scale if rocket is too tall
-        if (total_h_screen > 1.2f) {
-            preview_scale = 1.2f / bs.assembly.total_height;
-        }
-
-        float base_y = preview_cy - bs.assembly.total_height * preview_scale / 2.0f;
-
-        for (int i = 0; i < (int)bs.assembly.parts.size(); i++) {
-            const PlacedPart& pp = bs.assembly.parts[i];
-            const PartDef& def = PART_CATALOG[pp.def_id];
-            float pw = def.diameter * preview_scale * 0.5f;
-            float ph = def.height * preview_scale;
-            float py = base_y + pp.stack_y * preview_scale + ph / 2.0f;
-
-            bool highlight = (bs.in_assembly_mode && bs.assembly_cursor == i);
-            float hr = highlight ? fminf(def.r + 0.2f, 1.0f) : def.r;
-            float hg = highlight ? fminf(def.g + 0.2f, 1.0f) : def.g;
-            float hb = highlight ? fminf(def.b + 0.2f, 1.0f) : def.b;
-
-            if (def.category == CAT_NOSE_CONE) {
-                // Triangle (cone) shape
-                r->addRotatedTri(preview_cx, py + ph * 0.15f, pw * 0.9f, ph * 0.7f, 0.0f, hr, hg, hb);
-                r->addRect(preview_cx, py - ph * 0.2f, pw * 0.95f, ph * 0.3f, hr * 0.95f, hg * 0.95f, hb * 0.95f);
-            } else if (def.category == CAT_ENGINE) {
-                // Bell-shaped nozzle (inverted triangle + rectangle)
-                r->addRect(preview_cx, py + ph * 0.15f, pw * 0.6f, ph * 0.4f, hr * 0.8f, hg * 0.8f, hb * 0.8f);
-                r->addRotatedTri(preview_cx, py - ph * 0.2f, pw * 1.2f, ph * 0.5f, 3.14159f, hr, hg, hb);
-            } else if (def.category == CAT_STRUCTURAL && def.drag_coeff < 0) {
-                // Fins: draw as small triangles on sides
-                r->addRect(preview_cx, py, pw * 0.3f, ph, hr, hg, hb);
-                float fin_w = pw * 0.8f;
-                r->addRotatedTri(preview_cx - pw * 0.5f, py, fin_w, ph * 0.8f, -1.57f, hr * 0.9f, hg * 0.9f, hb * 0.9f);
-                r->addRotatedTri(preview_cx + pw * 0.5f, py, fin_w, ph * 0.8f, 1.57f, hr * 0.9f, hg * 0.9f, hb * 0.9f);
-            } else if (def.category == CAT_BOOSTER) {
-                // Boosters drawn as side-mounted cylinders
-                r->addRect(preview_cx, py, pw * 0.7f, ph, hr, hg, hb);
-                // Side boosters
-                r->addRect(preview_cx - pw * 0.6f, py, pw * 0.3f, ph * 0.8f, hr * 0.8f, hg * 0.8f, hb * 0.8f);
-                r->addRect(preview_cx + pw * 0.6f, py, pw * 0.3f, ph * 0.8f, hr * 0.8f, hg * 0.8f, hb * 0.8f);
-            } else {
-                // Default: rectangle (fuel tanks, adapters, decouplers, pods)
-                r->addRect(preview_cx, py, pw, ph, hr, hg, hb);
-
-                // Inter-stage rings for fuel tanks
-                if (def.category == CAT_FUEL_TANK) {
-                    r->addRect(preview_cx, py + ph / 2.0f, pw * 1.03f, 0.004f, 0.2f, 0.2f, 0.2f);
-                    r->addRect(preview_cx, py - ph / 2.0f, pw * 1.03f, 0.004f, 0.2f, 0.2f, 0.2f);
-                }
-                if (def.category == CAT_STRUCTURAL && def.drag_coeff >= 0) {
-                    // Decoupler: striped ring
-                    r->addRect(preview_cx, py, pw * 1.05f, ph, 0.3f, 0.3f, 0.1f, 0.7f);
-                }
-            }
-
-            // Highlight border for selected part
-            if (highlight) {
-                float blink = 0.6f + 0.4f * sinf(time * 4.0f);
-                r->addRect(preview_cx, py + ph / 2.0f + 0.003f, pw * 1.1f, 0.003f, 0.2f, 1.0f, 0.4f, blink);
-                r->addRect(preview_cx, py - ph / 2.0f - 0.003f, pw * 1.1f, 0.003f, 0.2f, 1.0f, 0.4f, blink);
-            }
-        }
-    }
+    // REMOVED: Now rendering the real 3D rocket in the background!
 
     // ---- Bottom Stats Panel ----
-    r->addRect(0.0f, -0.78f, 2.0f, 0.30f, 0.06f, 0.07f, 0.12f, 0.85f);
+    r->addRect(0.0f, -0.78f, 2.0f, 0.30f, 0.06f, 0.07f, 0.12f, 0.5f);
 
     // Separator line
     r->addRect(0.0f, -0.64f, 1.8f, 0.002f, 0.2f, 0.4f, 0.6f, 0.5f);

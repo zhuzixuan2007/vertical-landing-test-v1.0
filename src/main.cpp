@@ -159,6 +159,20 @@ int main() {
   }
 
   // =========================================================
+  // 初始化 3D 渲染器和网格 (Early instantiation for Workshop)
+  // =========================================================
+  Renderer3D* r3d = new Renderer3D();
+  Mesh earthMesh = MeshGen::sphere(96, 128, 1.0f);  // High-res unit sphere for RSS-Reborn quality
+  Mesh ringMesh = MeshGen::ring(64, 0.45f, 1.0f);   // 环形网格(内径0.45, 外径1.0)
+  Mesh rocketBody = MeshGen::cylinder(32, 1.0f, 1.0f);
+  Mesh rocketNose = MeshGen::cone(32, 1.0f, 1.0f);
+  Mesh rocketBox  = MeshGen::box(1.0f, 1.0f, 1.0f);
+  
+  // 尝试加载发射台模型 (如果存在)
+  Mesh launchPadMesh = ModelLoader::loadOBJ("assets/launch_pad.obj");
+  bool has_launch_pad = (launchPadMesh.indexCount > 0);
+
+  // =========================================================
   // BUILD 阶段：KSP-like 火箭组装界面
   // =========================================================
   BuilderState builder_state;
@@ -207,15 +221,123 @@ int main() {
     bk_now.pgdn  = glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
     bk_now.space = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
 
+    // Workshop camera controls (scroll and right click drag)
+    if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+        double mx, my;
+        glfwGetCursorPos(window, &mx, &my);
+        static double prev_mx = mx, prev_my = my;
+        float dx = (float)(mx - prev_mx) * 0.005f;
+        float dy = (float)(my - prev_my) * 0.005f;
+        builder_state.orbit_angle -= dx;
+        builder_state.orbit_pitch = std::max(-0.5f, std::min(1.5f, builder_state.orbit_pitch + dy));
+        prev_mx = mx;
+        prev_my = my;
+    } else {
+        // Auto rotate slowly
+        builder_state.orbit_angle += 0.001f;
+    }
+    
+    // Zoom control
+    if (g_scroll_y != 0.0f) {
+        builder_state.cam_dist *= powf(0.85f, g_scroll_y);
+        builder_state.cam_dist = std::max(2.0f, std::min(50.0f, builder_state.cam_dist));
+        g_scroll_y = 0.0f;
+    }
+
     build_done = builderHandleInput(builder_state, bk_now, bk_prev);
     bk_prev = bk_now;
 
-    // Render builder UI
-    glClearColor(0.05f, 0.06f, 0.10f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // --- 3D WORKSHOP RENDER PASS ---
+    int ww, wh;
+    glfwGetFramebufferSize(window, &ww, &wh);
+    r3d->lightDir = Vec3(0.5f, 1.0f, 0.3f).normalized(); // Angled floodlight
+
+    // Dynamic camera based on rocket height
+    float current_height = std::max(5.0f, builder_state.assembly.total_height);
+    float look_y = current_height * 0.4f;
+    
+    Vec3 camTarget(0.0f, look_y, 0.0f);
+    float dist = builder_state.cam_dist + current_height * 0.5f;
+    float cy = sinf(builder_state.orbit_pitch) * dist;
+    float cx = cosf(builder_state.orbit_pitch) * cosf(builder_state.orbit_angle) * dist;
+    float cz = cosf(builder_state.orbit_pitch) * sinf(builder_state.orbit_angle) * dist;
+    Vec3 camEye = camTarget + Vec3(cx, cy, cz);
+    
+    Mat4 viewMat = Mat4::lookAt(camEye, camTarget, Vec3(0.0f, 1.0f, 0.0f));
+    Mat4 projMat = Mat4::perspective(1.0f, (float)ww / (float)wh, 0.1f, 1000.0f);
+
+    r3d->beginFrame(viewMat, projMat, camEye);
+
+    // Dark foggy background for the massive VAB interior
+    glClearColor(0.02f, 0.025f, 0.03f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // Draw Workshop Environment
+    Mat4 padMat = Mat4::translate(Vec3(0, -0.1f, 0)) * Mat4::scale(Vec3(40.0f, 0.2f, 40.0f));
+    r3d->drawMesh(rocketBox, padMat, 0.15f, 0.16f, 0.18f, 1.0f, 0.1f); // Concrete floor
+    
+    // Draw grid lines on the pad
+    for (int i = -10; i <= 10; i++) {
+        if (i == 0) continue;
+        Mat4 lineX = Mat4::translate(Vec3(i * 2.0f, 0.02f, 0)) * Mat4::scale(Vec3(0.05f, 0.02f, 40.0f));
+        Mat4 lineZ = Mat4::translate(Vec3(0, 0.02f, i * 2.0f)) * Mat4::scale(Vec3(40.0f, 0.02f, 0.05f));
+        r3d->drawMesh(rocketBox, lineX, 0.3f, 0.3f, 0.1f, 1.0f, 0.2f); // Yellow hazard lines
+        r3d->drawMesh(rocketBox, lineZ, 0.3f, 0.3f, 0.1f, 1.0f, 0.2f);
+    }
+
+    // Scaffold pillars
+    Mat4 pillar1 = Mat4::translate(Vec3(-6, 15, -6)) * Mat4::scale(Vec3(1, 30, 1));
+    Mat4 pillar2 = Mat4::translate(Vec3(-6, 15, 6)) * Mat4::scale(Vec3(1, 30, 1));
+    r3d->drawMesh(rocketBox, pillar1, 0.2f, 0.2f, 0.2f, 1.0f, 0.1f);
+    r3d->drawMesh(rocketBox, pillar2, 0.2f, 0.2f, 0.2f, 1.0f, 0.1f);
+
+    // Draw Assembled Rocket Stack
+    float stack_y = 0.0f;
+    for (int i = 0; i < builder_state.assembly.parts.size(); i++) {
+        const PlacedPart& pp = builder_state.assembly.parts[i];
+        const PartDef& def = PART_CATALOG[pp.def_id];
+        
+        float r = def.r, g = def.g, b = def.b;
+        bool is_selected = (builder_state.in_assembly_mode && builder_state.assembly_cursor == i);
+        if (is_selected) {
+            float blink = 0.5f + 0.5f * sinf((float)glfwGetTime() * 5.0f);
+            r = std::min(1.0f, r + 0.3f * blink);
+            g = std::min(1.0f, g + 0.5f * blink);
+            b = std::min(1.0f, b + 0.2f * blink);
+        }
+
+        float half_h = def.height * 0.5f;
+        float py = stack_y + half_h;
+        float pd = def.diameter;
+        
+        Mat4 partMat = Mat4::translate(Vec3(0.0f, py, 0.0f)) * Mat4::scale(Vec3(pd, def.height, pd));
+
+        if (def.category == CAT_NOSE_CONE) {
+            r3d->drawMesh(rocketNose, partMat, r, g, b, 1.0f, 0.2f);
+        } else if (def.category == CAT_ENGINE) {
+            Mat4 bellMat = Mat4::translate(Vec3(0, stack_y + def.height * 0.4f, 0)) * Mat4::scale(Vec3(pd*0.8f, def.height*0.8f, pd*0.8f));
+            r3d->drawMesh(rocketNose, bellMat, r*0.8f, g*0.8f, b*0.8f, 1.0f, 0.1f);
+        } else if (def.category == CAT_BOOSTER) {
+            Mat4 boostMat1 = Mat4::translate(Vec3(def.diameter, py, 0)) * Mat4::scale(Vec3(pd*0.4f, def.height, pd*0.4f));
+            Mat4 boostMat2 = Mat4::translate(Vec3(-def.diameter, py, 0)) * Mat4::scale(Vec3(pd*0.4f, def.height, pd*0.4f));
+            r3d->drawMesh(rocketBody, partMat, r, g, b, 1.0f, 0.2f);
+            r3d->drawMesh(rocketBody, boostMat1, r*0.9f, g*0.9f, b*0.9f, 1.0f, 0.2f);
+            r3d->drawMesh(rocketBody, boostMat2, r*0.9f, g*0.9f, b*0.9f, 1.0f, 0.2f);
+        } else {
+            r3d->drawMesh(rocketBody, partMat, r, g, b, 1.0f, 0.2f);
+        }
+        
+        stack_y += def.height;
+    }
+
+    r3d->endFrame();
+
+    // Render builder UI OVERLAY (clear depth buffer so 2D renders on top)
+    glClear(GL_DEPTH_BUFFER_BIT);
     renderer->beginFrame();
     drawBuilderUI_KSP(renderer, builder_state, (float)glfwGetTime());
     renderer->endFrame();
+
     glfwSwapBuffers(window);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
@@ -247,20 +369,6 @@ int main() {
 
   // Keep a reference to the assembly for rendering
   const RocketAssembly& assembly = builder_state.assembly;
-
-  // =========================================================
-  // 初始化 3D 渲染器和网格
-  // =========================================================
-  Renderer3D* r3d = new Renderer3D();
-  Mesh earthMesh = MeshGen::sphere(96, 128, 1.0f);  // High-res unit sphere for RSS-Reborn quality
-  Mesh ringMesh = MeshGen::ring(64, 0.45f, 1.0f);   // 环形网格(内径0.45, 外径1.0)
-  Mesh rocketBody = MeshGen::cylinder(32, 1.0f, 1.0f);
-  Mesh rocketNose = MeshGen::cone(32, 1.0f, 1.0f);
-  Mesh rocketBox  = MeshGen::box(1.0f, 1.0f, 1.0f);
-  
-  // 尝试加载发射台模型 (如果存在)
-  Mesh launchPadMesh = ModelLoader::loadOBJ("assets/launch_pad.obj");
-  bool has_launch_pad = (launchPadMesh.indexCount > 0);
 
   int cam_mode_3d = 0; // 0=自由轨道, 1=跟踪, 2=全景
   static bool c_was_pressed = false;
