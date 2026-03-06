@@ -1241,41 +1241,21 @@ int main() {
           }
       }
 
-      // ===== 3D 火焰/尾焰粒子 =====
-      if (rocket_state.thrust_power > 0.0) {
+      // ===== 工业级 3D 体积尾焰 (Volumetric Raymarched Plume) =====
+      if (rocket_state.thrust_power > 0.1) {
         float thrust = (float)control_input.throttle;
-        float flame_base_size = rw_3d * 1.5f;
-        float game_time = (float)glfwGetTime();
-
-        // 真空中火焰更大（大气压缩效果）
-        float vacuum_scale = 1.0f + (float)fmin(rocket_state.altitude / 50000.0, 2.0);
-
-        for (int i = 0; i < 10; i++) {
-          // 粒子沿推力反方向分布
-          float t_off = (float)i / 10.0f;
-          float rand_off = sinf(game_time * 17.3f + i * 7.1f) * 0.3f + 0.5f;
-          float dist = (t_off * 0.5f + rand_off * 0.2f) * rh * thrust * vacuum_scale;
-          Vec3 particlePos = engNozzlePos - rocketDir * dist;
-
-          // 随机侧向偏移
-          float side_x = sinf(game_time * 23.7f + i * 3.3f) * rw_3d * 0.3f;
-          float side_z = cosf(game_time * 19.1f + i * 5.7f) * rw_3d * 0.3f;
-          particlePos = particlePos + localRight * side_x + Vec3(0.0f, 0.0f, 1.0f) * side_z;
-
-          // 颜色: 近喷口=白, 中=黄, 远=橙红
-          float cr, cg, cb;
-          if (t_off < 0.3f) {
-            cr = 1.0f; cg = 0.95f; cb = 0.8f;
-          } else if (t_off < 0.6f) {
-            cr = 1.0f; cg = 0.7f; cb = 0.2f;
-          } else {
-            cr = 1.0f; cg = 0.4f; cb = 0.05f;
-          }
-
-          float size = flame_base_size * (0.5f + t_off * 1.5f) * vacuum_scale;
-          float alpha = thrust * (1.0f - t_off * 0.7f) * 0.6f;
-          r3d->drawBillboard(particlePos, size, cr, cg, cb, alpha);
-        }
+        // 大气压力膨胀系数: 高空膨胀 (Expansion) = 1.0 - Density_Ratio
+        float expansion = (float)fmax(0.0, 1.0 - PhysicsSystem::get_air_density(rocket_state.altitude) / 1.225);
+        
+        // 尾焰尺寸：Box 代理需要包含整个膨胀区域
+        float plume_len = rh * 6.0f * (0.4f + thrust * 0.6f);
+        float plume_dia = rw_3d * 4.0f * (1.0f + expansion * 3.5f);
+        
+        // 尾焰渲染锚点：从发动机喷口向后延伸。MeshGen::box 中心在原点，所以偏移 plume_len * 0.5
+        Vec3 plumePos = engNozzlePos - rocketDir * (plume_len * 0.5f);
+        Mat4 plumeMdl = Mat4::TRS(plumePos, rocketQuat, Vec3(plume_dia, plume_len, plume_dia));
+        
+        r3d->drawExhaustVolumetric(rocketBox, plumeMdl, thrust, expansion, (float)glfwGetTime());
       }
 
       r3d->endFrame();

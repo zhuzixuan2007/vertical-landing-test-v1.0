@@ -322,6 +322,11 @@ public:
   // Skybox uniforms
   GLint us_invViewProj = -1, us_skyVibrancy = -1;
 
+  // Exhaust uniforms
+  GLuint exhaustProg = 0;
+  GLint uex_mvp = -1, uex_model = -1, uex_invModel = -1, uex_viewPos = -1, uex_time = -1;
+  GLint uex_throttle = -1, uex_expansion = -1;
+
   // ===== RSS-Reborn Per-Planet Shader Programs =====
   GLuint mercuryProgram = 0, venusProgram = 0, moonProgram = 0, marsProgram = 0;
   GLuint jupiterProgram = 0, saturnProgram = 0, uranusProgram = 0, neptuneProgram = 0;
@@ -2432,6 +2437,111 @@ R"(
     glEnableVertexAttribArray(0);
     glBindVertexArray(0);
 
+    // --- Volumetric Exhaust Shader (Mach Diamonds & Expansion) ---
+    const char* exVertSrc = R"(
+      #version 330 core
+      layout(location=0) in vec3 aPos;
+      uniform mat4 uMVP;
+      uniform mat4 uModel;
+      out vec3 vLocalPos;
+      out vec3 vWorldPos;
+      void main() {
+        vLocalPos = aPos; // Box from -0.5 to 0.5
+        vWorldPos = (uModel * vec4(aPos, 1.0)).xyz;
+        gl_Position = uMVP * vec4(aPos, 1.0);
+      }
+    )";
+    const char* exFragSrc = R"(
+      #version 330 core
+      in vec3 vLocalPos;
+      in vec3 vWorldPos;
+      uniform vec3 uViewPos;
+      uniform mat4 uInvModel;
+      uniform float uTime;
+      uniform float uThrottle;
+      uniform float uExpansion;
+      out vec4 FragColor;
+
+      float hash(float n) { return fract(sin(n) * 43758.5453123); }
+      float noise(vec3 x) {
+        vec3 p = floor(x); vec3 f = fract(x);
+        f = f*f*(3.0-2.0*f);
+        float n = p.x + p.y*57.0 + 113.0*p.z;
+        return mix(mix(mix(hash(n+0.0),hash(n+1.0),f.x),mix(hash(n+57.0),hash(n+58.0),f.x),f.y),
+                   mix(mix(hash(n+113.0),hash(n+114.0),f.x),mix(hash(n+170.0),hash(n+171.0),f.x),f.y),f.z);
+      }
+
+      vec2 rayBoxInter(vec3 ro, vec3 rd, vec3 boxMin, vec3 boxMax) {
+        vec3 t0 = (boxMin - ro) / rd;
+        vec3 t1 = (boxMax - ro) / rd;
+        vec3 tmin = min(t0, t1);
+        vec3 tmax = max(t0, t1);
+        float dNear = max(max(tmin.x, tmin.y), tmin.z);
+        float dFar = min(min(tmax.x, tmax.y), tmax.z);
+        return vec2(dNear, dFar);
+      }
+
+      void main() {
+        // Transform view position and ray direction to local space [-0.5, 0.5]
+        vec3 ro = (uInvModel * vec4(uViewPos, 1.0)).xyz;
+        vec3 rd = normalize((uInvModel * vec4(normalize(vWorldPos - uViewPos), 0.0)).xyz);
+        
+        vec2 bounds = rayBoxInter(ro, rd, vec3(-0.5), vec3(0.5));
+        if (bounds.x > bounds.y || bounds.y < 0.0) discard;
+        
+        float start = max(0.0, bounds.x);
+        float end = bounds.y;
+        
+        float t = start + hash(dot(vWorldPos, vec3(12.9898, 78.233, 45.164))) * 0.05;
+        vec4 finalCol = vec4(0.0);
+        int steps = 30;
+        float stepSize = (end - start) / float(steps);
+
+        for (int i=0; i<steps; i++) {
+          vec3 p = ro + rd * t;
+          float z = p.y + 0.5; // 0 to 1
+          float r = length(p.xz) * 2.0; // 0 to 1
+          
+          float flare = mix(0.35, 1.0 + uExpansion * 5.0, pow(1.0 - z, 1.5));
+          float d = 0.0;
+          if (r < flare) {
+            float normR = r / flare;
+            d = exp(-normR * 3.0) * pow(z, 0.4) * (1.0 - normR);
+            
+            // Mach Diamonds
+            float mach = cos((1.0 - z) * 60.0 + uTime * 15.0);
+            mach = smoothstep(0.8, 1.0, mach);
+            d += mach * (1.0 - normR) * 0.5 * z;
+            
+            // Turbulence
+            d *= (0.7 + 0.4 * noise(p * 15.0 - vec3(0, uTime * 8.0, 0)));
+            
+            vec3 core = vec3(1.0, 1.0, 0.8);
+            vec3 edge = vec3(1.0, 0.4, 0.05);
+            vec3 col = mix(edge, core, d);
+            col += vec3(0.2, 0.5, 1.0) * mach * (1.0 - normR) * z;
+            
+            float alpha = d * stepSize * 15.0;
+            finalCol.rgb += (1.0 - finalCol.a) * col * alpha;
+            finalCol.a += (1.0 - finalCol.a) * alpha;
+          }
+          
+          t += stepSize;
+          if (finalCol.a > 0.95) break;
+        }
+
+        FragColor = vec4(finalCol.rgb * uThrottle * 4.0, finalCol.a * uThrottle);
+      }
+    )";
+    exhaustProg = compileProgram(exVertSrc, exFragSrc);
+    uex_mvp = glGetUniformLocation(exhaustProg, "uMVP");
+    uex_model = glGetUniformLocation(exhaustProg, "uModel");
+    uex_invModel = glGetUniformLocation(exhaustProg, "uInvModel");
+    uex_viewPos = glGetUniformLocation(exhaustProg, "uViewPos");
+    uex_time = glGetUniformLocation(exhaustProg, "uTime");
+    uex_throttle = glGetUniformLocation(exhaustProg, "uThrottle");
+    uex_expansion = glGetUniformLocation(exhaustProg, "uExpansion");
+
     // --- TAA Resolve Shader ---
     const char* taaVertSrc = R"(
       #version 330 core
@@ -2842,6 +2952,37 @@ R"(
     glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDisable(GL_BLEND);
+  }
+
+  // 工业级 3D 体积尾焰 (Raymarched Plume)
+  void drawExhaustVolumetric(const Mesh& cylinderMesh, const Mat4& model, 
+                             float throttle, float expansion, float time) {
+    glUseProgram(exhaustProg);
+    
+    // Enable additive blending for the flame glow
+    glEnable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); 
+    glDepthMask(GL_FALSE); 
+
+    Mat4 mvp = proj * view * model;
+    Mat4 invModel = model.inverse();
+    glUniformMatrix4fv(uex_mvp, 1, GL_FALSE, mvp.m);
+    glUniformMatrix4fv(uex_model, 1, GL_FALSE, model.m);
+    glUniformMatrix4fv(uex_invModel, 1, GL_FALSE, invModel.m);
+    glUniform3f(uex_viewPos, camPos.x, camPos.y, camPos.z);
+    glUniform1f(uex_time, time);
+    glUniform1f(uex_throttle, throttle);
+    glUniform1f(uex_expansion, expansion);
+
+    cylinderMesh.draw();
+
+    // Revert state
+    glDepthMask(GL_TRUE);
+    glEnable(GL_CULL_FACE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_BLEND);
+    glUseProgram(0);
   }
 
   // 大气层散射壳 (Volumetric Scattering)
