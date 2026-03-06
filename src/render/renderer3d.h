@@ -2493,8 +2493,9 @@ R"(
       }
 
       void main() {
+        vec3 viewDirWorld = normalize(vWorldPos - uViewPos);
         vec3 ro = (uInvModel * vec4(uViewPos, 1.0)).xyz;
-        vec3 rd = normalize((uInvModel * vec4(normalize(vWorldPos - uViewPos), 0.0)).xyz);
+        vec3 rd = normalize((uInvModel * vec4(viewDirWorld, 0.0)).xyz);
         
         vec2 bounds = rayBoxInter(ro, rd, vec3(-0.5), vec3(0.5));
         if (bounds.x > bounds.y || bounds.y < 0.0) discard;
@@ -2502,12 +2503,12 @@ R"(
         float start = max(0.0, bounds.x);
         float end = bounds.y;
         
-        // Jitter for smoother volume
-        float dither = hash(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 0.02;
+        // High-frequency jitter
+        float dither = hash(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 0.015;
         float t = start + dither;
         
         vec4 finalCol = vec4(0.0);
-        int steps = 40;
+        int steps = 50; // Increased for Waterfall quality
         float stepSize = (end - start) / float(steps);
 
         for (int i=0; i<steps; i++) {
@@ -2515,47 +2516,58 @@ R"(
           float z = p.y + 0.5; // 0 (end) to 1 (nozzle)
           float r = length(p.xz) * 2.0; 
           
-          // Improved Flare shape: Parabolic expansion
-          float flare = mix(0.4, 1.0 + uExpansion * 6.0, pow(1.0 - z, 1.2));
+          // Waterfall-style Flare: Multi-stage expansion
+          // Tight core expansion + broad vacuum sheath
+          float coreFlare = mix(0.35, 1.0 + uExpansion * 4.0, pow(1.0 - z, 1.4));
+          float sheathFlare = coreFlare * (1.1 + uExpansion * 2.0);
           
-          if (r < flare) {
-            float normR = r / flare;
+          if (r < sheathFlare) {
+            float normR = r / coreFlare;
             
-            // 1. Base Density (exponential falloff)
-            float d = exp(-normR * 4.0) * pow(z, 0.35);
+            // 1. Base Physic-Informed Density
+            float d = exp(-normR * 5.0) * pow(z, 0.3) * (1.05 - normR);
+            d = max(0.0, d);
+
+            // 2. Conical Shock Fronts (True Waterfall Pattern)
+            // Instead of sine beads, use V-shaped shocks
+            float machZ = (1.0 - z);
+            float shockGrad = abs(fract(machZ * 8.0 + normR * 0.4 - uTime * 2.5) - 0.5) * 2.0;
+            float shock = smoothstep(0.15, 0.0, shockGrad);
+            d += shock * (1.1 - normR) * 0.7 * z;
             
-            // 2. Conical Mach Shocks (X-Pattern)
-            // Instead of linear beads, use the relation between z and r
-            float machZ = 1.0 - z;
-            float shock = cos(machZ * 50.0 - normR * 3.14 + uTime * 18.0);
-            shock = smoothstep(0.85, 1.0, shock);
-            d += shock * (1.1 - normR) * 0.6 * z;
+            // 3. Anisotropic Streaking & FBM Turbulence
+            // Vertical streaks + fluid turbulence
+            float streaks = noise(vec3(atan(p.x, p.z) * 4.0, p.y * 30.0, uTime * 2.0));
+            float turb = fbm(p * 10.0 - vec3(0, uTime * 12.0, 0));
+            d *= (0.5 + 0.5 * turb + 0.3 * streaks);
             
-            // 3. Fluid FBM Turbulence
-            float turb = fbm(p * 8.0 - vec3(0, uTime * 10.0, 0));
-            d *= (0.6 + 0.8 * turb);
+            // 4. View-Dependent Alpha Falloff (Ghosting edges)
+            // Real plumes look thinner when looking through the edges
+            float cosTheta = abs(dot(normalize(p), rd));
+            d *= (0.4 + 0.6 * pow(1.0 - normR, 2.0));
             
-            // 4. Color calibration (Blackbody-inspired)
-            vec3 core = vec3(1.0, 1.0, 0.85); // Ultra hot
-            vec3 mid = vec3(1.0, 0.45, 0.05); // Orange
-            vec3 edge = vec3(0.5, 0.1, 0.02); // Deep red
+            // 5. High-Dynamic Color Profiling
+            vec3 core = vec3(0.9, 0.95, 1.1);  // Blue-hot internal
+            vec3 mid = vec3(1.0, 0.5, 0.1);   // Primary combustion
+            vec3 outer = vec3(0.6, 0.15, 0.05); // Deep red cooling
             
-            vec3 col = mix(edge, mid, smoothstep(0.0, 0.5, d));
-            col = mix(col, core, smoothstep(0.5, 1.0, d));
+            vec3 col = mix(outer, mid, smoothstep(0.05, 0.3, d));
+            col = mix(col, core, smoothstep(0.3, 0.8, d));
             
-            // Blue shock core
-            col += vec3(0.2, 0.4, 1.0) * shock * (1.0 - normR) * z * 1.5;
+            // Mach core glow (Scientifically: hottest at shock intersections)
+            col += vec3(0.3, 0.6, 1.0) * shock * (1.0 - normR) * 2.0 * z;
             
-            float alpha = d * stepSize * 25.0;
+            float alpha = d * stepSize * 35.0; // Boost density
             finalCol.rgb += (1.0 - finalCol.a) * col * alpha;
             finalCol.a += (1.0 - finalCol.a) * alpha;
           }
           
           t += stepSize;
-          if (finalCol.a > 0.98) break;
+          if (finalCol.a > 0.99) break;
         }
 
-        FragColor = vec4(finalCol.rgb * uThrottle * 4.5, finalCol.a * uThrottle);
+        // Final saturation and glow multiplier
+        FragColor = vec4(finalCol.rgb * uThrottle * 5.0, finalCol.a * uThrottle);
       }
     )";
     exhaustProg = compileProgram(exVertSrc, exFragSrc);
