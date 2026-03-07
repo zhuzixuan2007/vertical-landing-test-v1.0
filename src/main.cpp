@@ -427,10 +427,12 @@ int main() {
   // Keep a reference to the assembly for rendering
   const RocketAssembly& assembly = builder_state.assembly;
 
-  int cam_mode_3d = 0; // 0=自由轨道, 1=跟踪, 2=全景
+  int cam_mode_3d = 0; // 0=轨道 (优化型), 1=跟踪, 2=全景
   static bool c_was_pressed = false;
-  // 四元数轨道球相机
-  Quat cam_quat; // 相机方位四元数 (单位四元数 = 初始位置)
+  // 相机参数
+  Quat cam_quat; // 自由模式四元数 (用于全景和追踪微调)
+  float orbit_yaw = 0.0f;   // 专用轨道视角偏航
+  float orbit_pitch = 0.4f; // 专用轨道视角俯仰
   float cam_zoom_chase = 1.0f; // 轨道/跟踪模式缩放
   float cam_zoom_pan = 1.0f;   // 全景模式独立缩放
   double prev_mx = 0, prev_my = 0;
@@ -500,13 +502,18 @@ int main() {
         if (mouse_dragging) {
           float dx = (float)(mx - prev_mx) * 0.003f;
           float dy = (float)(my - prev_my) * 0.003f;
-          // 四元数增量旋转：屏幕水平拖动 = 绕全局Y旋转，垂直拖动 = 绕局部X旋转
-          // 用绕全局上方向旋转 (yaw) 和绕相机右方向旋转 (pitch)
-          Quat yaw_rot = Quat::fromAxisAngle(Vec3(0.0f, 0.0f, 1.0f), -dx);
-          // 相机的右方向 = cam_quat 旋转后的 X 轴
-          Vec3 cam_right = cam_quat.rotate(Vec3(1.0f, 0.0f, 0.0f));
-          Quat pitch_rot = Quat::fromAxisAngle(cam_right, -dy);
-          cam_quat = (yaw_rot * pitch_rot * cam_quat).normalized();
+          
+          if (cam_mode_3d == 0) {
+              // 轨道模式：更新球坐标
+              orbit_yaw -= dx;
+              orbit_pitch = std::max(-1.5f, std::min(1.5f, orbit_pitch + dy));
+          } else {
+              // 其他模式：保持原有的自由四元数旋转
+              Quat yaw_rot = Quat::fromAxisAngle(Vec3(0.0f, 0.0f, 1.0f), -dx);
+              Vec3 cam_right = cam_quat.rotate(Vec3(1.0f, 0.0f, 0.0f));
+              Quat pitch_rot = Quat::fromAxisAngle(cam_right, -dy);
+              cam_quat = (yaw_rot * pitch_rot * cam_quat).normalized();
+          }
         }
         mouse_dragging = true;
       } else {
@@ -766,6 +773,16 @@ int main() {
           localRight = Vec3(1.0f, 0.0f, 0.0f);
       }
       Vec3 localNorth = rocketUp.cross(localRight).normalized();
+      
+      // --- 计算用于 Orbit 摄像机的轨道参考系 (基于当前相对于 SOI 的坐标) ---
+      Vec3 v_vec_rel((float)rocket_state.vx, (float)rocket_state.vy, (float)rocket_state.vz);
+      Vec3 p_vec_rel((float)rocket_state.px, (float)rocket_state.py, (float)rocket_state.pz);
+      Vec3 h_vec_rel = p_vec_rel.cross(v_vec_rel);
+      Vec3 orbit_normal_rel = h_vec_rel.normalized();
+      if (orbit_normal_rel.length() < 0.01f) orbit_normal_rel = Vec3(0, 0, 1);
+      Vec3 prograde_rel = v_vec_rel.normalized();
+      if (prograde_rel.length() < 0.01f) prograde_rel = localNorth;
+      Vec3 radial_rel = orbit_normal_rel.cross(prograde_rel).normalized();
 
       // 构建 2D 面内主朝向
       float rocket_angle = (float)rocket_state.angle;
@@ -805,11 +822,33 @@ int main() {
 
       Vec3 camEye_rel, camTarget_rel, camUpVec;
       if (cam_mode_3d == 0) {
+        // --- 优化型 Orbit 视角 ---
+        double apo_tmp = 0, peri_tmp = 0;
+        PhysicsSystem::getOrbitParams(rocket_state, apo_tmp, peri_tmp);
+        bool is_in_orbit = (peri_tmp > 120000.0); // 120km 判定为稳定轨道
+        
         float orbit_dist = rh * 8.0f * cam_zoom_chase;
-        Vec3 cam_offset = cam_quat.rotate(Vec3(0.0f, 0.0f, orbit_dist));
-        camEye_rel = renderRocketPos + cam_offset;
-        camTarget_rel = renderRocketPos;
-        camUpVec = cam_quat.rotate(Vec3(0.0f, 1.0f, 0.0f));
+        
+        if (!is_in_orbit) {
+            // 地面模式：始终保持地面在下 (Up = rocketUp)
+            // 摄像机方向由 orbit_yaw 和 orbit_pitch 决定
+            Vec3 view_dir = localNorth * cosf(orbit_yaw) * cosf(orbit_pitch) + 
+                            localRight * sinf(orbit_yaw) * cosf(orbit_pitch) + 
+                            rocketUp   * sinf(orbit_pitch);
+            camEye_rel = renderRocketPos + view_dir * orbit_dist;
+            camTarget_rel = renderRocketPos;
+            camUpVec = rocketUp;
+        } else {
+            // 入轨模式：采用 Orbit-Relative 视角
+            // “Up” 方向转为轨道法线方向，这使得轨道面看起来是水平的，符合空间航行直觉
+            Vec3 view_dir = prograde_rel * cosf(orbit_yaw) * cosf(orbit_pitch) + 
+                            radial_rel   * sinf(orbit_yaw) * cosf(orbit_pitch) + 
+                            orbit_normal_rel * sinf(orbit_pitch);
+
+            camEye_rel = renderRocketPos + view_dir * orbit_dist;
+            camTarget_rel = renderRocketPos;
+            camUpVec = orbit_normal_rel;
+        }
       } else if (cam_mode_3d == 1) {
         float chase_dist = rh * 8.0f * cam_zoom_chase;
         Vec3 chase_base = rocketDir * (-chase_dist * 0.4f) + rocketUp * (chase_dist * 0.15f);
