@@ -185,17 +185,41 @@ void UpdateManualControl(RocketState& state, ControlInput& input, const ManualIn
         if (manual.roll_left) { input.torque_cmd_roll = torque_magnitude; manual_roll = true; }   // Q: Roll CCW
         if (manual.roll_right) { input.torque_cmd_roll = -torque_magnitude; manual_roll = true; } // E
 
-        // SAS (Stability Assist) - Damps rotation if no manual input is given
+        // SAS (Stability Assist) - Damps rotation or targets specific vector
         if (state.sas_active) {
             double damping_gain = 40000.0;
-            if (!manual_yaw) {
-                input.torque_cmd = -state.ang_vel * damping_gain;
-            }
-            if (!manual_pitch) {
-                input.torque_cmd_z = -state.ang_vel_z * damping_gain;
-            }
-            if (!manual_roll) {
-                input.torque_cmd_roll = -state.ang_vel_roll * damping_gain;
+            
+            if (state.sas_mode == SAS_STABILITY) {
+                if (!manual_yaw) input.torque_cmd = -state.ang_vel * damping_gain;
+                if (!manual_pitch) input.torque_cmd_z = -state.ang_vel_z * damping_gain;
+                if (!manual_roll) input.torque_cmd_roll = -state.ang_vel_roll * damping_gain;
+            } else if (state.sas_target_vec.length() > 0.1f) {
+                // Target orientation logic: Align rocket Y+ with sas_target_vec
+                Vec3 rocketY = state.attitude.rotate(Vec3(0, 1, 0));
+                Vec3 targetDir = state.sas_target_vec;
+                
+                // Calculate error quaternion or simple cross-product torque
+                // Simple version: Torque = k * cross(current, target) - damping * velocity
+                Vec3 error = rocketY.cross(targetDir);
+                
+                // Transform world-space error to local-space torque
+                Vec3 localError = state.attitude.conjugate().rotate(error);
+                
+                // Rocket local: Y+ is up/down on flight screen (longitudinal), 
+                // X+ is right, Z+ is out-of-screen (in our HUD projection logic)
+                // BUT in physics_system/main.cpp: 
+                // torque_cmd affects pitch (angle_z), torque_cmd_z affects out-of-plane pitch
+                // Let's align with the manual inputs:
+                // yaw_left/right -> torque_cmd (A/D)
+                // pitch_up/down -> torque_cmd_z (W/S)
+                // roll_left/right -> torque_cmd_roll (Q/E)
+                
+                double kp_sas = 80000.0;
+                double kd_sas = 40000.0;
+                
+                if (!manual_yaw) input.torque_cmd = localError.x * kp_sas - state.ang_vel * kd_sas;
+                if (!manual_pitch) input.torque_cmd_z = localError.z * kp_sas - state.ang_vel_z * kd_sas;
+                if (!manual_roll) input.torque_cmd_roll = -state.ang_vel_roll * kd_sas; // Always damp roll for now
             }
         }
     }

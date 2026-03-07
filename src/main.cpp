@@ -1954,8 +1954,71 @@ int main() {
     float nav_y = -0.70f;
     float nav_rad = 0.18f;
 
+    // 计算轨道向量 (相对于当前 SOI)
+    Vec3 vPrograde(0, 0, 0), vNormal(0, 0, 0), vRadial(0, 0, 0);
+    {
+        double rel_vx = rocket_state.vx, rel_vy = rocket_state.vy, rel_vz = rocket_state.vz;
+        double rel_px = rocket_state.px, rel_py = rocket_state.py, rel_pz = rocket_state.pz;
+        
+        if (orbit_reference_sun && current_soi_index != 0) {
+            CelestialBody& cb = SOLAR_SYSTEM[current_soi_index];
+            rel_vx += cb.vx; rel_vy += cb.vy; rel_vz += cb.vz;
+            rel_px += cb.px; rel_py += cb.py; rel_pz += cb.pz;
+        }
+        
+        double speed = sqrt(rel_vx*rel_vx + rel_vy*rel_vy + rel_vz*rel_vz);
+        if (speed > 0.1) {
+            vPrograde = Vec3((float)(rel_vx / speed), (float)(rel_vy / speed), (float)(rel_vz / speed));
+            
+            Vec3 posVec((float)rel_px, (float)rel_py, (float)rel_pz);
+            vNormal = vPrograde.cross(posVec).normalized();
+            vRadial = vNormal.cross(vPrograde).normalized();
+            
+            // 更新 SAS 目标向量
+            if (rocket_state.sas_mode == SAS_PROGRADE) rocket_state.sas_target_vec = vPrograde;
+            else if (rocket_state.sas_mode == SAS_RETROGRADE) rocket_state.sas_target_vec = vPrograde * -1.0f;
+            else if (rocket_state.sas_mode == SAS_NORMAL) rocket_state.sas_target_vec = vNormal;
+            else if (rocket_state.sas_mode == SAS_ANTINORMAL) rocket_state.sas_target_vec = vNormal * -1.0f;
+            else if (rocket_state.sas_mode == SAS_RADIAL_IN) rocket_state.sas_target_vec = vRadial;
+            else if (rocket_state.sas_mode == SAS_RADIAL_OUT) rocket_state.sas_target_vec = vRadial * -1.0f;
+        }
+    }
+
     // 直接使用四元数投影，彻底解决万向锁和翻转问题
-    renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth, rocket_state.sas_active, rocket_state.rcs_active);
+    renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth, rocket_state.sas_active, rocket_state.rcs_active, vPrograde, vNormal, vRadial);
+
+    // --- 8. SAS 模式按钮 (位于导航球右侧) ---
+    float btn_start_x = nav_x + nav_rad + 0.06f;
+    float btn_y_top = nav_y + nav_rad * 0.5f;
+    float btn_w = 0.05f, btn_h = 0.05f;
+    float spacing = 0.06f;
+
+    struct SASBtn { SASMode mode; const char* label; float r, g, b; };
+    std::vector<SASBtn> sas_btns = {
+        {SAS_STABILITY, "STB", 0.7f, 0.7f, 0.7f},
+        {SAS_PROGRADE, "PRO", 0.2f, 0.8f, 0.2f},
+        {SAS_RETROGRADE, "RET", 0.8f, 0.8f, 0.2f},
+        {SAS_NORMAL, "NRM", 0.8f, 0.2f, 0.8f},
+        {SAS_ANTINORMAL, "ANT", 0.5f, 0.1f, 0.5f},
+        {SAS_RADIAL_IN, "R-I", 0.2f, 0.5f, 0.8f},
+        {SAS_RADIAL_OUT, "R-O", 0.1f, 0.3f, 0.6f}
+    };
+
+    for (int i = 0; i < (int)sas_btns.size(); i++) {
+        float bx = btn_start_x + (i % 2) * spacing;
+        float by = btn_y_top - (i / 2) * spacing;
+        
+        bool hover = (hmouse_x >= bx - btn_w/2 && hmouse_x <= bx + btn_w/2 && hmouse_y >= by - btn_h/2 && hmouse_y <= by + btn_h/2);
+        if (hover && hlmb && !hlmb_prev) {
+            rocket_state.sas_mode = sas_btns[i].mode;
+            rocket_state.sas_active = true;
+        }
+        
+        float alpha = (rocket_state.sas_mode == sas_btns[i].mode) ? 0.9f : 0.4f;
+        if (hover) alpha += 0.1f;
+        renderer->addRect(bx, by, btn_w, btn_h, sas_btns[i].r, sas_btns[i].g, sas_btns[i].b, alpha);
+        renderer->drawText(bx, by, sas_btns[i].label, 0.012f, 1, 1, 1, 0.9f, true, Renderer::CENTER);
+    }
 
     // ========================================================================
     } // end if (show_hud)

@@ -73,6 +73,16 @@ enum MissionState {
     CRASHED
 };
 
+enum SASMode {
+    SAS_STABILITY,
+    SAS_PROGRADE,
+    SAS_RETROGRADE,
+    SAS_NORMAL,
+    SAS_ANTINORMAL,
+    SAS_RADIAL_IN,
+    SAS_RADIAL_OUT
+};
+
 // Simple utility function needed by state logic
 inline float hash11(int n) {
     n = (n << 13) ^ n;
@@ -210,6 +220,8 @@ struct RocketState {
     bool auto_mode = true;
     bool sas_active = true;
     bool rcs_active = true;
+    SASMode sas_mode = SAS_STABILITY;
+    Vec3 sas_target_vec = {0, 0, 0}; // Normalized target vector in world space (relative to body)
     double leg_deploy_progress = 0.0;
     
     // Particle System state 
