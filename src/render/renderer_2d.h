@@ -147,17 +147,26 @@ public:
   }
 
   // 画圆形
-  void addCircle(float cx, float cy, float radius, float r, float g, float b) {
-    int segments = 360;
+  // 画圆形
+  void addCircle(float cx, float cy, float radius, float r, float g, float b, float a = 1.0f) {
+    int segments = 64; // 从 360 减少到 64 提高性能
     for (int i = 0; i < segments; i++) {
-      float theta1 = 2.0f * PI * float(i) / float(segments);
-      float theta2 = 2.0f * PI * float(i + 1) / float(segments);
-      addVertex(cx, cy, r, g, b, 1.0f);
-      addVertex(cx + radius * cos(theta1), cy + radius * sin(theta1), r, g, b,
-                1.0f);
-      addVertex(cx + radius * cos(theta2), cy + radius * sin(theta2), r, g, b,
-                1.0f);
+        float theta1 = 2.0f * PI * float(i) / float(segments);
+        float theta2 = 2.0f * PI * float(i + 1) / float(segments);
+        addVertex(cx, cy, r, g, b, a);
+        addVertex(cx + radius * cosf(theta1), cy + radius * sinf(theta1), r, g, b, a);
+        addVertex(cx + radius * cosf(theta2), cy + radius * sinf(theta2), r, g, b, a);
     }
+  }
+
+  // 画直线
+  void addLine(float x1, float y1, float x2, float y2, float thick, float r, float g, float b, float a = 1.0f) {
+      float dx = x2 - x1;
+      float dy = y2 - y1;
+      float len = sqrtf(dx*dx + dy*dy);
+      if (len < 1e-6f) return;
+      float angle = atan2f(dy, dx);
+      addRotatedRect((x1 + x2) * 0.5f, (y1 + y2) * 0.5f, len, thick, angle, r, g, b, a);
   }
 
   // 精细地球渲染
@@ -226,6 +235,121 @@ public:
       addVertex(cx + ir * std::cos(t2), cy + ir * std::sin(t2), 0.4f, 0.6f, 1.0f, 0.4f);
       addVertex(cx + or_ * std::cos(t2), cy + or_ * std::sin(t2), 0.3f, 0.5f, 0.9f, 0.0f);
     }
+  }
+
+  // 姿态球 (Navball)
+  // pitch: [-PI/2, PI/2], yaw: [0, 2*PI], roll: [-PI, PI]
+  void drawAttitudeSphere(float cx, float cy, float radius, const Quat& qRocket, const Vec3& localRight, const Vec3& localUp, const Vec3& localNorth) {
+    // 1. 基础圆盘与底座
+    addCircle(cx, cy, radius * 1.05f, 0.1f, 0.1f, 0.12f, 0.9f);
+    addCircle(cx, cy, radius, 0.2f, 0.2f, 0.22f, 1.0f);
+
+    // 2. 坐标转换逻辑 (直接基于四元数投影，消除万向锁)
+    // p 处于水平参考系 (X=East, Y=Up, Z=North)
+    auto project = [&](Vec3 p) -> Vec2 {
+        // 先转到世界空间
+        Vec3 pW = localRight * p.x + localUp * p.y + localNorth * p.z;
+        // 再转到火箭局部空间
+        Vec3 pR = qRocket.conjugate().rotate(pW);
+        // 火箭纵轴为 Y+ (Depth)，左右为 X+，上下为 Z+ (Screen Y)
+        if (pR.y < 0) return {999, 999}; 
+        return {cx + pR.x * radius, cy + pR.z * radius};
+    };
+
+    auto getSpherePt = [&](float lat, float lon) -> Vec3 {
+        float phi = lat * (PI / 180.0f), theta = lon * (PI / 180.0f);
+        return { cosf(phi) * sinf(theta), sinf(phi), cosf(phi) * cosf(theta) };
+    };
+
+    // 3. 绘制色块 (天空与地面) - 提高精细度
+    int lat_steps = 24; // 增加步长
+    int lon_steps = 48;
+    for (int i = 0; i < lat_steps; i++) {
+        float lat1 = -90.0f + (float)i / lat_steps * 180.0f;
+        float lat2 = -90.0f + (float)(i + 1) / lat_steps * 180.0f;
+        for (int j = 0; j < lon_steps; j++) {
+            float lon1 = (float)j / lon_steps * 360.0f;
+            float lon2 = (float)(j + 1) / lon_steps * 360.0f;
+            Vec3 v1 = getSpherePt(lat1, lon1), v2 = getSpherePt(lat1, lon2);
+            Vec3 v3 = getSpherePt(lat2, lon2), v4 = getSpherePt(lat2, lon1);
+            Vec2 p1 = project(v1), p2 = project(v2), p3 = project(v3), p4 = project(v4);
+            if (p1.x < 900 || p2.x < 900 || p3.x < 900 || p4.x < 900) {
+                Vec3 col = (lat1 + lat2 > 0) ? Vec3(0.08f, 0.45f, 0.88f) : Vec3(0.58f, 0.32f, 0.15f);
+                auto safeAddTri = [&](Vec2 a, Vec2 b, Vec2 c) {
+                    if (a.x > 900 || b.x > 900 || c.x > 900) return;
+                    addVertex(a.x, a.y, col.x, col.y, col.z, 1.0f);
+                    addVertex(b.x, b.y, col.x, col.y, col.z, 1.0f);
+                    addVertex(c.x, c.y, col.x, col.y, col.z, 1.0f);
+                };
+                safeAddTri(p1, p2, p3); safeAddTri(p1, p3, p4);
+            }
+        }
+    }
+
+    // 4. 绘制地平线 (Horizon Line)
+    for (int j = 0; j < 128; j++) {
+        float lon1 = (float)j / 128 * 360.0f, lon2 = (float)(j + 1) / 128 * 360.0f;
+        Vec2 p1 = project(getSpherePt(0, lon1)), p2 = project(getSpherePt(0, lon2));
+        if (p1.x < 900 && p2.x < 900) addLine(p1.x, p1.y, p2.x, p2.y, 0.004f, 1, 1, 1, 1.0f);
+    }
+
+    // 5. 绘制俯仰刻度 (Pitch Lines) 与 刻字
+    for (int lat = -80; lat <= 80; lat += 10) {
+        if (lat == 0) continue;
+        for (int j = 0; j < 96; j++) {
+            float lon1 = (float)j / 96 * 360.0f, lon2 = (float)(j + 1) / 96 * 360.0f;
+            Vec2 p1 = project(getSpherePt((float)lat, lon1)), p2 = project(getSpherePt((float)lat, lon2));
+            if (p1.x < 900 && p2.x < 900) {
+                float opacity = (lat % 30 == 0) ? 0.6f : 0.3f;
+                addLine(p1.x, p1.y, p2.x, p2.y, 0.0012f, 1, 1, 1, opacity);
+            }
+        }
+        // 刻字：不仅在 0 度，更在环绕四周，并随边缘淡出
+        for (int deg = 0; deg < 360; deg += 90) {
+            Vec3 vL = getSpherePt((float)lat, (float)deg);
+            Vec3 pW = localRight * vL.x + localUp * vL.y + localNorth * vL.z;
+            Vec3 pR = qRocket.conjugate().rotate(pW);
+            if (pR.y > 0.1f) { // y 是深度，y > 0 在正面
+                float alpha = fminf(1.0f, pR.y * 3.0f); // 边缘淡出以增强“球体感”
+                Vec2 plabel = {cx + pR.x * radius, cy + pR.z * radius};
+                char buf[8]; snprintf(buf, sizeof(buf), "%d", lat);
+                drawText(plabel.x, plabel.y, buf, radius * 0.09f, 1, 1, 1, 0.8f * alpha, true, CENTER);
+            }
+        }
+    }
+
+    // 6. 绘制垂直经线 (Meridians) 与 航向标签
+    for (int lon = 0; lon < 360; lon += 30) {
+        for (int i = 0; i < 36; i++) {
+            float lat1 = -90.0f + (float)i * 5.0f, lat2 = lat1 + 5.0f;
+            Vec2 p1 = project(getSpherePt(lat1, (float)lon)), p2 = project(getSpherePt(lat2, (float)lon));
+            if (p1.x < 900 && p2.x < 900) addLine(p1.x, p1.y, p2.x, p2.y, 0.001f, 1, 1, 1, 0.3f);
+        }
+        // 航向标签 (N, E, S, W) - 增加淡出以增强“刻在球上”的感觉
+        const char* marks[] = {"N", "30", "60", "E", "120", "150", "S", "210", "240", "W", "300", "330"};
+        Vec3 vM = getSpherePt(0, (float)lon);
+        Vec3 pW_m = localRight * vM.x + localUp * vM.y + localNorth * vM.z;
+        Vec3 pR_m = qRocket.conjugate().rotate(pW_m);
+        if (pR_m.y > 0.05f) {
+            float alpha = fminf(1.0f, pR_m.y * 4.0f);
+            Vec2 pmark = {cx + pR_m.x * radius, cy + pR_m.z * radius};
+            drawText(pmark.x, pmark.y, marks[lon/30], radius * 0.12f, 1, 1, 0.1f, 0.9f * alpha, true, CENTER);
+        }
+    }
+
+    // 7. 绘制中央固定指示器 (Level Indicator) - "The Wings"
+    // 增加一个半透明黑色底座来消除各种细碎线条造成的闪烁/遮光感
+    addCircle(cx, cy, radius * 0.12f, 0, 0, 0, 0.4f);
+    float iw = radius * 0.45f;
+    float ih = radius * 0.045f;
+    // 阴影/描边 (黑色)
+    addRect(cx - iw * 0.7f, cy, iw * 0.52f, ih * 1.5f, 0, 0, 0, 0.8f);
+    addRect(cx + iw * 0.7f, cy, iw * 0.52f, ih * 1.5f, 0, 0, 0, 0.8f);
+    addRect(cx, cy, ih * 3.5f, ih * 3.5f, 0, 0, 0, 0.8f);
+    // 主体 (橘色)
+    addRect(cx - iw * 0.7f, cy, iw * 0.5f, ih, 1.0f, 0.6f, 0.0f, 1.0f); // L
+    addRect(cx + iw * 0.7f, cy, iw * 0.5f, ih, 1.0f, 0.6f, 0.0f, 1.0f); // R
+    addRect(cx, cy, ih * 2.5f, ih * 2.5f, 1.0f, 0.6f, 0.0f, 1.0f);      // C
   }
 
   enum Align { LEFT, CENTER, RIGHT };

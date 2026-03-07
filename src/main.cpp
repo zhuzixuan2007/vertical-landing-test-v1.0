@@ -719,18 +719,19 @@ int main() {
     // NOTE: We move camera-centric logic into the rendering pass below to ensure
     // that visuals respond to the camera's location, not just the rocket's.
 
+    // === 3D/HUD 共享变量与姿态计算 ===
+    double ws_d = 0.001;
+    Quat rocketQuat;
+    Vec3 rocketUp, localNorth, localRight;
+    float local_xy_mag = 0;
+
     // ================= 3D 渲染通道 =================
     {
-      // 世界坐标缩放
-      double ws_d = 0.001;
       float earth_r = (float)EARTH_RADIUS * (float)ws_d;
-
-      // 2D→3D 坐标映射 (Double precision) - Use absolute heliocentric coordinates!
       double r_px = rocket_state.abs_px * ws_d;
       double r_py = rocket_state.abs_py * ws_d;
       double r_pz = rocket_state.abs_pz * ws_d;
       
-      // ===== 太阳位置与真实尺寸 =====
       CelestialBody& sun_body = SOLAR_SYSTEM[0];
       double sun_px = sun_body.px * ws_d;
       double sun_py = sun_body.py * ws_d;
@@ -738,7 +739,7 @@ int main() {
       float sun_radius = (float)sun_body.radius * ws_d;
       double sun_dist_d = sqrt(r_px*r_px + r_py*r_py + r_pz*r_pz);
 
-      // ===== 按键监听：视点切换 =====
+      // --- 按键监听：视点切换 ---
       static int focus_target = 3; // Default to Earth
       static bool comma_prev = false;
       static bool period_prev = false;
@@ -777,21 +778,20 @@ int main() {
       // 【深空姿态锁定】：基于火箭在当前参考星系的本地坐标(以中心天体为原点)计算向上的表面法线！
       double local_dist_sq = rocket_state.px*rocket_state.px + rocket_state.py*rocket_state.py + rocket_state.pz*rocket_state.pz;
       double local_dist = sqrt(local_dist_sq);
-      Vec3 rocketUp((float)(rocket_state.px / local_dist), (float)(rocket_state.py / local_dist), (float)(rocket_state.pz / local_dist));
+      rocketUp = Vec3((float)(rocket_state.px / local_dist), (float)(rocket_state.py / local_dist), (float)(rocket_state.pz / local_dist));
       if (rocket_state.altitude > 2000000.0) { // 2000公里外，完全脱离近地轨道，进入深空
           rocketUp = Vec3(0.0f, 1.0f, 0.0f);
       }
       
       // ===== 构建火箭完整的 3D 朝向四元数 =====
       // 保证局部坐标系的单位正交
-      double local_xy_mag = sqrt(rocketUp.x*rocketUp.x + rocketUp.y*rocketUp.y);
-      Vec3 localRight(0,0,0);
+      local_xy_mag = sqrt(rocketUp.x*rocketUp.x + rocketUp.y*rocketUp.y);
       if (local_xy_mag > 1e-4) {
           localRight = Vec3((float)(-rocketUp.y/local_xy_mag), (float)(rocketUp.x/local_xy_mag), 0.0f);
       } else {
           localRight = Vec3(1.0f, 0.0f, 0.0f);
       }
-      Vec3 localNorth = rocketUp.cross(localRight).normalized();
+      localNorth = rocketUp.cross(localRight).normalized();
       
       // --- 计算用于 Orbit 摄像机的轨道参考系 (基于当前相对于 SOI 的坐标) ---
       Vec3 v_vec_rel((float)rocket_state.vx, (float)rocket_state.vy, (float)rocket_state.vz);
@@ -820,7 +820,7 @@ int main() {
 
       // 组合基础 2D 旋转与局部的轴外俯仰 (Pitch) 旋转
       Quat pitchQuat = Quat::fromAxisAngle(dynamicRight, (float)rocket_state.angle_z);
-      Quat rocketQuat = pitchQuat * baseQuat;
+      rocketQuat = pitchQuat * baseQuat;
       
       // 更新 rocketDir 为包含 3D 俯仰的真实朝向
       Vec3 rocketDir = rocketQuat.rotate(Vec3(0.0f, 1.0f, 0.0f));
@@ -1931,6 +1931,14 @@ int main() {
                       : 0.8f - ((float)control_input.throttle - 0.5f) * 1.6f;
     renderer->addRect(thr_fill_x, thr_bar_y, thr_fill, thr_bar_h, thr_r, thr_g,
                       0.1f, hud_opacity);
+
+    // --- 7. 姿态球 (Navball) ---
+    float nav_x = 0.0f;
+    float nav_y = -0.70f;
+    float nav_rad = 0.18f;
+
+    // 直接使用四元数投影，彻底解决万向锁和翻转问题
+    renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth);
 
     // ========================================================================
     } // end if (show_hud)
