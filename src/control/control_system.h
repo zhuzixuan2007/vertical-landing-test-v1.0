@@ -15,10 +15,12 @@ namespace ControlSystem {
         bool throttle_max;
         bool throttle_min;
         
-        bool pitch_left;
-        bool pitch_right;
-        bool pitch_forward;
-        bool pitch_backward;
+        bool yaw_left;
+        bool yaw_right;
+        bool pitch_up;
+        bool pitch_down;
+        bool roll_left;
+        bool roll_right;
     };
     
     void UpdateManualControl(RocketState& state, ControlInput& input, const ManualInputs& manual, double dt);

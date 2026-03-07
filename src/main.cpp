@@ -682,10 +682,12 @@ int main() {
     manual.throttle_down = glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS;
     manual.throttle_max = glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS;
     manual.throttle_min = glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS;
-    manual.pitch_left = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
-    manual.pitch_right = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
-    manual.pitch_forward = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
-    manual.pitch_backward = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+    manual.yaw_left = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
+    manual.yaw_right = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+    manual.pitch_up = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+    manual.pitch_down = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+    manual.roll_left = glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS;
+    manual.roll_right = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
 
     // --- 物理更新 ---
     if (time_warp > 1000) {
@@ -805,8 +807,24 @@ int main() {
           rocketUp = Vec3(0.0f, 1.0f, 0.0f);
       }
       
-      // ===== 构建火箭完整的 3D 朝向四元数 =====
-      // 保证局部坐标系的单位正交
+      // ===== BUILD ROCKET ATTITUDE =====
+      static int last_soi = -1;
+      if (last_soi != current_soi_index) {
+          rocket_state.attitude_initialized = false;
+          last_soi = current_soi_index;
+      }
+
+      if (!rocket_state.attitude_initialized) {
+           rocket_state.attitude = Quat::fromEuler((float)rocket_state.angle, (float)rocket_state.angle_z, (float)rocket_state.angle_roll);
+           rocket_state.attitude_initialized = true;
+      }
+      rocketQuat = rocket_state.attitude;
+      
+      // Update rocketDir for rendering logic
+      Vec3 rocketDir = rocketQuat.rotate(Vec3(0.0f, 1.0f, 0.0f));
+
+      // --- 计算用于 Orbit 摄像机的轨道参考系 (基于当前相对于 SOI 的坐标) ---
+      // Restore these for Orbit Camera mode (lines 898-900)
       local_xy_mag = sqrt(rocketUp.x*rocketUp.x + rocketUp.y*rocketUp.y);
       if (local_xy_mag > 1e-4) {
           localRight = Vec3((float)(-rocketUp.y/local_xy_mag), (float)(rocketUp.x/local_xy_mag), 0.0f);
@@ -815,7 +833,6 @@ int main() {
       }
       localNorth = rocketUp.cross(localRight).normalized();
       
-      // --- 计算用于 Orbit 摄像机的轨道参考系 (基于当前相对于 SOI 的坐标) ---
       Vec3 v_vec_rel((float)rocket_state.vx, (float)rocket_state.vy, (float)rocket_state.vz);
       Vec3 p_vec_rel((float)rocket_state.px, (float)rocket_state.py, (float)rocket_state.pz);
       Vec3 h_vec_rel = p_vec_rel.cross(v_vec_rel);
@@ -824,28 +841,6 @@ int main() {
       Vec3 prograde_rel = v_vec_rel.normalized();
       if (prograde_rel.length() < 0.01f) prograde_rel = localNorth;
       Vec3 radial_rel = orbit_normal_rel.cross(prograde_rel).normalized();
-
-      // 构建 2D 面内主朝向
-      float rocket_angle = (float)rocket_state.angle;
-      Vec3 rocketDir2D = rocketUp * cosf(rocket_angle) + localRight * sinf(rocket_angle);
-
-      // 构建对应的主旋转四元数
-      Vec3 defaultUp(0.0f, 1.0f, 0.0f);
-      Vec3 rotAxis = defaultUp.cross(rocketDir2D);
-      float rotAngle = acosf(fminf(fmaxf(defaultUp.dot(rocketDir2D), -1.0f), 1.0f));
-      Quat baseQuat;
-      if (rotAxis.length() > 1e-6f)
-        baseQuat = Quat::fromAxisAngle(rotAxis.normalized(), rotAngle);
-
-      // 提取动态翻滚轴 (Rotated Right) 用作俯仰轴，防止 Gimbal Lock 导致 angle_z 偏航失效
-      Vec3 dynamicRight = localNorth.cross(rocketDir2D).normalized();
-
-      // 组合基础 2D 旋转与局部的轴外俯仰 (Pitch) 旋转
-      Quat pitchQuat = Quat::fromAxisAngle(dynamicRight, (float)rocket_state.angle_z);
-      rocketQuat = pitchQuat * baseQuat;
-      
-      // 更新 rocketDir 为包含 3D 俯仰的真实朝向
-      Vec3 rocketDir = rocketQuat.rotate(Vec3(0.0f, 1.0f, 0.0f));
 
       // 火箭尺寸
       float rocket_vis_scale = 1.0f;

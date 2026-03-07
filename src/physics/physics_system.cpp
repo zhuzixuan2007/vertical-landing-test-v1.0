@@ -1,5 +1,6 @@
 #include "physics_system.h"
 #include "simulation/stage_manager.h"
+#include "math/math3d.h"
 #include <algorithm>
 #include <iostream>
 
@@ -498,7 +499,7 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
 
     // We will do Gravity inside calc_accel directly now
 
-    // 2. Thrust
+    // 2. Force Analysis (Pre-Integration)
     state.thrust_power = 0;
     if (state.fuel > 0) {
         double max_thrust = config.specific_impulse * G0 * config.cosrate;
@@ -507,9 +508,8 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
         if (current_thrust < 0) current_thrust = 0;
         state.thrust_power = current_thrust;
 
-        double m_dot = state.thrust_power / (config.specific_impulse * G0);
+        double m_dot = state.thrust_power / (config.specific_impulse * std::max(1e-6, G0));
         state.fuel -= m_dot * dt;
-        // Sync stage_fuels
         if (state.current_stage < (int)state.stage_fuels.size()) {
             state.stage_fuels[state.current_stage] = state.fuel;
         }
@@ -519,85 +519,65 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
         state.fuel_consumption_rate = 0;
     }
 
-    // --- 3D Geometric Frame and Thrust Projection ---
-    double r_mag = std::sqrt(state.px*state.px + state.py*state.py + state.pz*state.pz);
-    double Ux = state.px / r_mag;
-    double Uy = state.py / r_mag;
-    double Uz = state.pz / r_mag;
+    // --- 3D Geometric Frame and Attitude Update ---
+    double r_mag_geo = std::sqrt(state.px*state.px + state.py*state.py + state.pz*state.pz);
+    double Ux = state.px / r_mag_geo;
+    double Uy = state.py / r_mag_geo;
+    double Uz = state.pz / r_mag_geo;
 
-    double r_xy_mag = std::sqrt(Ux*Ux + Uy*Uy);
+    double r_xy_mag_geo = std::sqrt(Ux*Ux + Uy*Uy);
     double Rx = 0, Ry = 0, Rz = 0;
-    if (r_xy_mag > 1e-6) {
-        Rx = -Uy / r_xy_mag;
-        Ry = Ux / r_xy_mag;
+    if (r_xy_mag_geo > 1e-6) {
+        Rx = -Uy / r_xy_mag_geo;
+        Ry = Ux / r_xy_mag_geo;
         Rz = 0.0;
     } else {
         Rx = 1.0; Ry = 0.0; Rz = 0.0;
     }
-
     double Nx = Uy * Rz - Uz * Ry;
     double Ny = Uz * Rx - Ux * Rz;
     double Nz = Ux * Ry - Uy * Rx;
-    double N_mag = std::sqrt(Nx*Nx + Ny*Ny + Nz*Nz);
-    Nx /= N_mag; Ny /= N_mag; Nz /= N_mag;
+    double N_mag_geo = std::sqrt(Nx*Nx + Ny*Ny + Nz*Nz);
+    Nx /= N_mag_geo; Ny /= N_mag_geo; Nz /= N_mag_geo;
 
-    double cos_a = std::cos(state.angle);
-    double sin_a = std::sin(state.angle);
-    double Fx = Ux * cos_a + Rx * sin_a;
-    double Fy = Uy * cos_a + Ry * sin_a;
-    double Fz = Uz * cos_a + Rz * sin_a;
+    // Angular Motion Integration (3D Quaternion based)
+    if (!state.attitude_initialized) {
+        Vec3 initialUp = Vec3((float)Ux, (float)Uy, (float)Uz);
+        Vec3 defaultUp(0, 1, 0);
+        Vec3 axis = defaultUp.cross(initialUp);
+        float dot = defaultUp.dot(initialUp);
+        Quat base;
+        if (axis.length() > 1e-6f) base = Quat::fromAxisAngle(axis.normalized(), std::acos(std::fmax(-1.0f, std::fmin(1.0f, dot))));
+        Quat q_pitch = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)state.angle); 
+        Quat q_yaw = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)state.angle_z);
+        Quat q_roll = Quat::fromAxisAngle(Vec3(0, 1, 0), (float)state.angle_roll);
+        state.attitude = base * q_yaw * q_pitch * q_roll;
+        state.attitude_initialized = true;
+    }
 
-    double cos_z = std::cos(state.angle_z);
-    double sin_z = std::sin(state.angle_z);
-    
-    double thrust_dir_x = Fx * cos_z + Nx * sin_z;
-    double thrust_dir_y = Fy * cos_z + Ny * sin_z;
-    double thrust_dir_z = Fz * cos_z + Nz * sin_z;
+    // Apply local angular velocities to update the attitude (pre-move)
+    Vec3 local_rot_vel((float)state.ang_vel_z, (float)state.ang_vel_roll, (float)state.ang_vel); 
+    if (local_rot_vel.lengthSq() > 1e-12f) {
+        float rot_mag = local_rot_vel.length();
+        Quat dq = Quat::fromAxisAngle(local_rot_vel / rot_mag, rot_mag * (float)dt);
+        state.attitude = (state.attitude * dq).normalized();
+    }
 
-    double Ft_x = state.thrust_power * thrust_dir_x;
-    double Ft_y = state.thrust_power * thrust_dir_y;
-    double Ft_z = state.thrust_power * thrust_dir_z;
+    // Derive the thrust direction directly from the 3D attitude
+    Vec3 thrust_dir = state.attitude.forward();
+    double Ft_x = state.thrust_power * thrust_dir.x;
+    double Ft_y = state.thrust_power * thrust_dir.y;
+    double Ft_z = state.thrust_power * thrust_dir.z;
 
-    // 3. Aerodynamic Drag & Torque
+    // 3. Aerodynamic Drag & RK4 Integration
     double v_sq = state.vx * state.vx + state.vy * state.vy + state.vz * state.vz;
     double v_mag = std::sqrt(v_sq);
     double local_up_angle = std::atan2(state.py, state.px);
-    double Fd_x = 0, Fd_y = 0;
-    double aero_torque = 0;
 
-    if (v_mag > 0.1 && state.altitude < 80000) {
-        double rho = get_air_density(state.altitude);
-
-        double base_area = 10.0;
-        double side_area = config.height * config.diameter; 
-        double effective_area = base_area + side_area * std::abs(std::sin(state.angle_z));
-
-        // Drag (F = 0.5 * rho * v^2 * Cd * A), assuming Cd=0.5
-        double drag_mag = 0.5 * rho * v_sq * 0.5 * effective_area;
-        Fd_x = -drag_mag * (state.vx / v_mag);
-        Fd_y = -drag_mag * (state.vy / v_mag);
-
-        // Structural limits check
-        double dynamic_pressure = 0.5 * rho * v_sq;
-        if (dynamic_pressure > 50000.0 && std::abs(state.angle_z) > 0.35) { // ~20 degrees
-            state.status = CRASHED;
-            state.mission_msg = ">> STRUCTURAL FAILURE: HIGH Q OUT-OF-PLANE PITCH!";
-            state.vx = 0; state.vy = 0; 
-            state.ang_vel = 0; state.ang_vel_z = 0;
-            return;
-        }
-
-        // Aerodynamic Torques
-        aero_torque -= state.ang_vel * 0.1 * v_mag * rho;
-    }
-
-    // C. Integration (RK4)
     auto calc_accel = [&](double temp_px, double temp_py, double temp_pz, double temp_vx, double temp_vy, double temp_vz, double& out_ax, double& out_ay, double& out_az) {
         double r_inner_sq = temp_px * temp_px + temp_py * temp_py + temp_pz * temp_pz;
         double r_inner = std::sqrt(r_inner_sq);
         double r3_inner = r_inner_sq * r_inner;
-        
-        // 1. Direct gravity from current SOI body
         double Fgx = 0, Fgy = 0, Fgz = 0;
         if (r3_inner > 0) {
             double GM = G_const * current_body.mass;
@@ -605,42 +585,31 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
             Fgy = -GM * temp_py / r3_inner * total_mass;
             Fgz = -GM * temp_pz / r3_inner * total_mass;
         }
-        
-        // 2. N-Body Perturbation Gravity
         for (size_t i = 0; i < SOLAR_SYSTEM.size(); i++) {
-            if (i == current_soi_index) continue; // Handled as primary
+            if (i == (size_t)current_soi_index) continue;
             CelestialBody& body = SOLAR_SYSTEM[i];
-            
             double dx_body = body.px - current_body.px;
             double dy_body = body.py - current_body.py;
             double dz_body = body.pz - current_body.pz;
-            
             double rdx = dx_body - temp_px;
             double rdy = dy_body - temp_py;
             double rdz = dz_body - temp_pz;
             double r_rocket_sq = rdx*rdx + rdy*rdy + rdz*rdz;
             double r_rocket3 = r_rocket_sq * std::sqrt(r_rocket_sq);
-            
             double dist_body_sq = dx_body*dx_body + dy_body*dy_body + dz_body*dz_body;
             double dist_body3 = dist_body_sq * std::sqrt(dist_body_sq);
-            
             double GM = G_const * body.mass;
             Fgx += GM * (rdx / r_rocket3 - dx_body / dist_body3) * total_mass;
             Fgy += GM * (rdy / r_rocket3 - dy_body / dist_body3) * total_mass;
             Fgz += GM * (rdz / r_rocket3 - dz_body / dist_body3) * total_mass;
         }
-        
-        // Air Drag (Atmosphere rotates with the planet)
         double Fdx = 0, Fdy = 0, Fdz = 0;
         double omega = (2.0 * PI) / current_body.rotation_period;
         double v_atmo_x = -omega * temp_py;
         double v_atmo_y = omega * temp_px;
-        double v_atmo_z = 0;
-        
         double rel_vx = temp_vx - v_atmo_x;
         double rel_vy = temp_vy - v_atmo_y;
-        double rel_vz = temp_vz - v_atmo_z;
-        
+        double rel_vz = temp_vz;
         double temp_v_sq = rel_vx * rel_vx + rel_vy * rel_vy + rel_vz * rel_vz;
         double temp_v_mag = std::sqrt(temp_v_sq);
         double alt = r_inner - current_body.radius;
@@ -654,7 +623,6 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
             Fdy = -drag_mag * (rel_vy / temp_v_mag);
             Fdz = -drag_mag * (rel_vz / temp_v_mag);
         }
-        
         out_ax = (Fgx + Ft_x + Fdx) / total_mass;
         out_ay = (Fgy + Ft_y + Fdy) / total_mass;
         out_az = (Fgz + Ft_z + Fdz) / total_mass;
@@ -663,19 +631,16 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     double k1_vx, k1_vy, k1_vz, k1_px, k1_py, k1_pz;
     calc_accel(state.px, state.py, state.pz, state.vx, state.vy, state.vz, k1_vx, k1_vy, k1_vz);
     k1_px = state.vx; k1_py = state.vy; k1_pz = state.vz;
-
     double k2_vx, k2_vy, k2_vz, k2_px, k2_py, k2_pz;
     calc_accel(state.px + 0.5 * dt * k1_px, state.py + 0.5 * dt * k1_py, state.pz + 0.5 * dt * k1_pz, 
                state.vx + 0.5 * dt * k1_vx, state.vy + 0.5 * dt * k1_vy, state.vz + 0.5 * dt * k1_vz, 
                k2_vx, k2_vy, k2_vz);
     k2_px = state.vx + 0.5 * dt * k1_vx; k2_py = state.vy + 0.5 * dt * k1_vy; k2_pz = state.vz + 0.5 * dt * k1_vz;
-
     double k3_vx, k3_vy, k3_vz, k3_px, k3_py, k3_pz;
     calc_accel(state.px + 0.5 * dt * k2_px, state.py + 0.5 * dt * k2_py, state.pz + 0.5 * dt * k2_pz, 
                state.vx + 0.5 * dt * k2_vx, state.vy + 0.5 * dt * k2_vy, state.vz + 0.5 * dt * k2_vz, 
                k3_vx, k3_vy, k3_vz);
-    k3_px = state.vx + 0.5 * dt * k2_vx; k3_py = state.vy + 0.5 * dt * k2_vy; k3_pz = state.vz + 0.5 * dt * k2_vz;
-
+    k3_px = state.vx + 0.5 * dt * k2_vx; k3_py = state.vy + 0.5 * dt * k2_py; k3_pz = state.vz + 0.5 * dt * k2_vz;
     double k4_vx, k4_vy, k4_vz, k4_px, k4_py, k4_pz;
     calc_accel(state.px + dt * k3_px, state.py + dt * k3_py, state.pz + dt * k3_pz, 
                state.vx + dt * k3_vx, state.vy + dt * k3_vy, state.vz + dt * k3_vz, 
@@ -685,104 +650,63 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     state.vx += (dt / 6.0) * (k1_vx + 2.0 * k2_vx + 2.0 * k3_vx + k4_vx);
     state.vy += (dt / 6.0) * (k1_vy + 2.0 * k2_vy + 2.0 * k3_vy + k4_vy);
     state.vz += (dt / 6.0) * (k1_vz + 2.0 * k2_vz + 2.0 * k3_vz + k4_vz);
-    
     state.px += (dt / 6.0) * (k1_px + 2.0 * k2_px + 2.0 * k3_px + k4_px);
     state.py += (dt / 6.0) * (k1_py + 2.0 * k2_py + 2.0 * k3_py + k4_py);
     state.pz += (dt / 6.0) * (k1_pz + 2.0 * k2_pz + 2.0 * k3_pz + k4_pz);
     
-    // Update displayed acceleration
-    double final_ax, final_ay, final_az;
-    calc_accel(state.px, state.py, state.pz, state.vx, state.vy, state.vz, final_ax, final_ay, final_az);
-    state.acceleration = std::sqrt(final_ax * final_ax + final_ay * final_ay + final_az * final_az);
+    // Update derived info
+    state.acceleration = std::sqrt(k4_vx * k4_vx + k4_vy * k4_vy + k4_vz * k4_vz); 
+    state.velocity = state.vx * Ux + state.vy * Uy + state.vz * Uz;
+    double surface_rotation_speed = (2.0 * PI / current_body.rotation_period) * std::sqrt(state.px * state.px + state.py * state.py);
+    state.local_vx = (-state.vx * std::sin(local_up_angle) + state.vy * std::cos(local_up_angle)) - surface_rotation_speed;
 
-    // Derived velocities
-    state.velocity = state.vx * std::cos(local_up_angle) + state.vy * std::sin(local_up_angle);
-    double tangential_vel = -state.vx * std::sin(local_up_angle) + state.vy * std::cos(local_up_angle);
-    
-    // Make ground horizontal velocity relative to the rotating surface
-    double omega = (2.0 * PI) / current_body.rotation_period;
-    double surface_rotation_speed = omega * std::sqrt(state.px * state.px + state.py * state.py);
-    state.local_vx = tangential_vel - surface_rotation_speed;
-
-    // E. Collision Detection
-    double current_r = std::sqrt(state.px * state.px + state.py * state.py + state.pz * state.pz);
-    double current_alt = current_r - current_body.radius;
-
-    if (current_alt <= 0.0) {
-        if (state.status == ASCEND) {
-            // Keep surface lock ONLY if vertical velocity is not significantly positive
-            if (state.velocity < 0.01) {
-                double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
-                double cos_t = std::cos(theta);
-                double sin_t = std::sin(theta);
-                state.px = state.surf_px * cos_t - state.surf_py * sin_t;
-                state.py = state.surf_px * sin_t + state.surf_py * cos_t;
-                state.pz = state.surf_pz;
-                double omega = (2.0 * PI) / current_body.rotation_period;
-                state.vx = -omega * state.py;
-                state.vy = omega * state.px;
-                state.vz = 0;
-                state.altitude = 0;
-            }
+    // E. Collision and Final Sync
+    double current_alt_f = std::sqrt(state.px*state.px+state.py*state.py+state.pz*state.pz) - current_body.radius;
+    if (current_alt_f <= 0.0) {
+        if (state.status == ASCEND && state.velocity < 0.01) {
+            double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
+            state.px = state.surf_px * std::cos(theta) - state.surf_py * std::sin(theta);
+            state.py = state.surf_px * std::sin(theta) + state.surf_py * std::cos(theta);
+            state.pz = state.surf_pz;
+            state.vx = -(2*PI/current_body.rotation_period)*state.py;
+            state.vy = (2*PI/current_body.rotation_period)*state.px;
+            state.vz = 0; state.altitude = 0;
         } else if (state.velocity < 0.1) {
             state.altitude = 0;
-            
             if (state.status != PRE_LAUNCH && state.status != LANDED) {
-                if (std::abs(state.velocity) > 10 || std::abs(state.local_vx) > 10) {
-                    state.status = CRASHED;
-                } else {
+                if (std::abs(state.velocity) > 10 || std::abs(state.local_vx) > 10) state.status = CRASHED;
+                else {
                     state.status = LANDED;
-                    // Capture body-fixed coordinates
                     double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
                     state.surf_px = state.px * std::cos(-theta) - state.py * std::sin(-theta);
                     state.surf_py = state.px * std::sin(-theta) + state.py * std::cos(-theta);
                     state.surf_pz = state.pz;
                 }
-                double omega = (2.0 * PI) / current_body.rotation_period;
-                state.vx = -omega * state.py;
-                state.vy = omega * state.px;
-                state.vz = 0;
-                state.ang_vel = 0; state.ang_vel_z = 0;
-                state.angle = 0; state.angle_z = 0;
-                state.velocity = 0; state.local_vx = 0;
-                state.suicide_burn_locked = false; 
+                state.vx = -(2*PI/current_body.rotation_period)*state.py; state.vy = (2*PI/current_body.rotation_period)*state.px; state.vz = 0;
+                state.ang_vel = 0; state.ang_vel_z = 0; state.ang_vel_roll = 0;
             }
-        } else {
-            state.altitude = current_alt;
         }
-    } else {
-        state.altitude = current_alt;
-    }
+    } else state.altitude = current_alt_f;
 
-    // Angular Motion
-    // Dynamic Moment of Inertia: Assuming a cylinder/rod shape approximation
-    // I = (1/12) * M * (3r^2 + h^2) but we simplify to proportional to mass
+    // F. Final Angular Velocity Updates and Legacy Sync
     double base_moi = 50000.0;
     double moment_of_inertia = base_moi * (total_mass / 50000.0); 
-    
-    double final_torque = input.torque_cmd;
-    double ang_accel = (final_torque + aero_torque) / moment_of_inertia;
-    state.ang_vel += ang_accel * dt;
+    double aero_torque = (v_mag > 0.1 && state.altitude < 80000) ? (-0.1 * v_mag * get_air_density(state.altitude)) : 0;
+    state.ang_vel_z += (input.torque_cmd_z / moment_of_inertia + state.ang_vel_z * aero_torque) * dt;
+    state.ang_vel += (input.torque_cmd / moment_of_inertia + state.ang_vel * aero_torque) * dt;
+    state.ang_vel_roll += (input.torque_cmd_roll / moment_of_inertia + state.ang_vel_roll * aero_torque) * dt;
 
-    // Apply some base angular air resistance (damping) even in vacuum for simulation stability if needed, 
-    // but here we keep it physical.
-    state.angle += state.ang_vel * dt;
-
-    // Z Axis Out of plane Pitch
-    double rho_z = (state.altitude < 80000) ? get_air_density(state.altitude) : 0.0;
-    double aero_torque_z = -state.ang_vel_z * 0.1 * v_mag * rho_z; 
-    double ang_accel_z = (input.torque_cmd_z + aero_torque_z) / moment_of_inertia;
-    state.ang_vel_z += ang_accel_z * dt;
-
-    // Subtle drift damping in deep space to prevent infinite tiny rotation accumulation
-    if (state.altitude > 80000 && std::abs(input.torque_cmd) < 0.1 && std::abs(input.torque_cmd_z) < 0.1) {
-        state.ang_vel *= std::pow(0.99, dt);
-        state.ang_vel_z *= std::pow(0.99, dt);
+    if (state.altitude > 80000 && std::abs(input.torque_cmd)<0.1 && std::abs(input.torque_cmd_z)<0.1 && std::abs(input.torque_cmd_roll)<0.1) {
+        state.ang_vel *= std::pow(0.99, dt); state.ang_vel_z *= std::pow(0.99, dt); state.ang_vel_roll *= std::pow(0.99, dt);
     }
-    state.angle_z += state.ang_vel_z * dt;
 
-    while (state.angle_z > PI) state.angle_z -= 2 * PI;
-    while (state.angle_z < -PI) state.angle_z += 2 * PI;
+    // Sync legacy for HUD
+    Vec3 fwd_sync = state.attitude.forward();
+    state.angle = std::atan2(fwd_sync.dot(Vec3((float)Rx,(float)Ry,(float)Rz)), fwd_sync.dot(Vec3((float)Ux,(float)Uy,(float)Uz)));
+    state.angle_z = std::asin(std::fmax(-1.0, std::fmin(1.0, (double)fwd_sync.dot(Vec3((float)Nx,(float)Ny,(float)Nz)))));
+    Vec3 local_up_s = state.attitude.rotate(Vec3(0, 0, 1));
+    Vec3 world_top_s = Vec3((float)Ux,(float)Uy,(float)Uz).cross(fwd_sync).normalized();
+    if (world_top_s.length() > 0.1f) state.angle_roll = std::atan2(local_up_s.dot(world_top_s.cross(fwd_sync).normalized()), local_up_s.dot(world_top_s));
 }
 
 void FastGravityUpdate(RocketState& state, const RocketConfig& config, double dt_total) {

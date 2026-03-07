@@ -167,25 +167,35 @@ void UpdateManualControl(RocketState& state, ControlInput& input, const ManualIn
 
     input.torque_cmd = 0;
     input.torque_cmd_z = 0;
+    input.torque_cmd_roll = 0;
     
     // RCS provides torque. If RCS is off, manual input generates no torque.
     if (state.rcs_active) {
+        double torque_magnitude = 60000.0;
+
         bool manual_pitch = false;
-        if (manual.pitch_left) { input.torque_cmd = 60000.0; manual_pitch = true; }
-        if (manual.pitch_right) { input.torque_cmd = -60000.0; manual_pitch = true; }
-        
-        bool manual_pitch_z = false;
-        if (manual.pitch_forward) { input.torque_cmd_z = 60000.0; manual_pitch_z = true; }
-        if (manual.pitch_backward) { input.torque_cmd_z = -60000.0; manual_pitch_z = true; }
+        if (manual.pitch_up) { input.torque_cmd_z = torque_magnitude; manual_pitch = true; }   // W: Pitch Down/Up
+        if (manual.pitch_down) { input.torque_cmd_z = -torque_magnitude; manual_pitch = true; } // S
+
+        bool manual_yaw = false;
+        if (manual.yaw_left) { input.torque_cmd = torque_magnitude; manual_yaw = true; }    // A: Yaw Left
+        if (manual.yaw_right) { input.torque_cmd = -torque_magnitude; manual_yaw = true; }  // D
+
+        bool manual_roll = false;
+        if (manual.roll_left) { input.torque_cmd_roll = torque_magnitude; manual_roll = true; }   // Q: Roll CCW
+        if (manual.roll_right) { input.torque_cmd_roll = -torque_magnitude; manual_roll = true; } // E
 
         // SAS (Stability Assist) - Damps rotation if no manual input is given
         if (state.sas_active) {
             double damping_gain = 40000.0;
-            if (!manual_pitch) {
+            if (!manual_yaw) {
                 input.torque_cmd = -state.ang_vel * damping_gain;
             }
-            if (!manual_pitch_z) {
+            if (!manual_pitch) {
                 input.torque_cmd_z = -state.ang_vel_z * damping_gain;
+            }
+            if (!manual_roll) {
+                input.torque_cmd_roll = -state.ang_vel_roll * damping_gain;
             }
         }
     }

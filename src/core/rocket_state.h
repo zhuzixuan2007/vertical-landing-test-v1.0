@@ -5,6 +5,7 @@
 #include <vector>
 #include <cmath>
 #include <iostream>
+#include "math/math3d.h"
 
 // Constants
 constexpr double PI = 3.14159265358979323846;
@@ -152,6 +153,7 @@ struct ControlInput {
     double throttle = 0.0;    // 0.0 to 1.0
     double torque_cmd = 0.0;  // Z-axis torque command (pitch in 2D plane)
     double torque_cmd_z = 0.0; // X/Y axis torque command (out of plane pitch)
+    double torque_cmd_roll = 0.0; // Roll torque command
 };
 
 // Dynamic Rocket State (updated by physics)
@@ -176,10 +178,14 @@ struct RocketState {
     double surf_px = 0.0, surf_py = EARTH_RADIUS, surf_pz = 0.0;
     
     // Attitude
+    Quat attitude;           // True 3D attitude
+    bool attitude_initialized = false;
     double angle = 0.0;      // Yaw (in 2D plane)
     double ang_vel = 0.0;
     double angle_z = 0.0;    // Out-of-plane pitch
     double ang_vel_z = 0.0;
+    double angle_roll = 0.0; // Self-spin (Roll)
+    double ang_vel_roll = 0.0;
     
     // Physics simulation metadata
     double sim_time = 0.0;
@@ -216,6 +222,7 @@ struct RocketState {
     PID pid_pos = {0.001, 0.0, 0.2};        
     PID pid_att = {40000.0, 0.0, 100000.0}; 
     PID pid_att_z = {40000.0, 0.0, 100000.0};
+    PID pid_att_roll = {40000.0, 0.0, 100000.0};
 };
 
 #endif // ROCKET_STATE_H
