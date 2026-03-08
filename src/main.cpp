@@ -1980,7 +1980,7 @@ int main() {
     renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth, rocket_state.sas_active, rocket_state.rcs_active, vPrograde, vNormal, vRadial);
 
     // --- 8. SAS 模式按钮 (位于导航球右侧) ---
-    float btn_start_x = nav_x + nav_rad + 0.06f;
+    float btn_start_x = nav_x + nav_rad + 0.12f;
     float btn_y_top = nav_y + nav_rad * 0.5f;
     float btn_w = 0.05f, btn_h = 0.05f;
     float spacing = 0.06f;

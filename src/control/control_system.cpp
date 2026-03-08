@@ -217,29 +217,39 @@ void UpdateManualControl(RocketState& state, const RocketConfig& config, Control
                     Vec3 errorVec = rocketNose.cross(targetDir);
                     Vec3 localError = state.attitude.conjugate().rotate(errorVec);
                     
-                    double torque_mag = 4000000.0;
+                    double torque_mag = 60000.0; // Synchronized with manual control
                     double base_moi = 50000.0;
                     double total_mass = config.dry_mass + state.fuel + config.upper_stages_mass;
                     double moi = base_moi * (total_mass / 50000.0);
                     double max_a = torque_mag / moi;
                     
+                    // High-performance velocity law with linear region near zero to prevent chatter
                     auto get_v = [&](float err) {
                         float abs_e = std::abs(err);
-                        if (abs_e < 1e-6f) return 0.0;
-                        double v = std::sqrt(2.0 * (max_a * 0.8) * abs_e);
+                        if (abs_e < 1e-4f) return 0.0;
+                        
+                        // sqrt(2*a*d) braking curve
+                        double v_curve = std::sqrt(2.0 * (max_a * 0.5) * abs_e);
+                        
+                        // Linear region for smooth landing at target: v = k * error
+                        // We blend or use a transition to ensure stability
+                        double v_linear = 5.0 * abs_e; 
+                        double v = std::min(v_curve, v_linear);
+                        
                         return (double)(err > 0 ? v : -v);
                     };
 
                     double target_vx = get_v(localError.x);
                     double target_vz = get_v(localError.z);
                     
-                    double max_v = 1.5;
+                    double max_v = 1.0; // Slightly slower for better stability
                     if (target_vx > max_v) target_vx = max_v;
                     if (target_vx < -max_v) target_vx = -max_v;
                     if (target_vz > max_v) target_vz = max_v;
                     if (target_vz < -max_v) target_vz = -max_v;
 
-                    double K = moi * 10.0; 
+                    // Lower gain for stability
+                    double K = moi * 2.0; 
                     double tx = (target_vx - state.ang_vel_z) * K;
                     double tz = (target_vz - state.ang_vel) * K;
 
