@@ -1854,7 +1854,7 @@ int main() {
            rocket_state.mission_msg = ">> MANUAL CONTROL ACTIVE (MOUSE)";
         }
     }
-    hlmb_prev = hlmb;
+    // hlmb_prev updated after all HUD interactions
 
     renderer->addRect(mode_x, mode_y, mode_w, mode_h, 0.05f, 0.05f, 0.05f, 0.7f);
     if (rocket_state.auto_mode) {
@@ -1973,14 +1973,6 @@ int main() {
             Vec3 posVec((float)rel_px, (float)rel_py, (float)rel_pz);
             vNormal = vPrograde.cross(posVec).normalized();
             vRadial = vNormal.cross(vPrograde).normalized();
-            
-            // 更新 SAS 目标向量
-            if (rocket_state.sas_mode == SAS_PROGRADE) rocket_state.sas_target_vec = vPrograde;
-            else if (rocket_state.sas_mode == SAS_RETROGRADE) rocket_state.sas_target_vec = vPrograde * -1.0f;
-            else if (rocket_state.sas_mode == SAS_NORMAL) rocket_state.sas_target_vec = vNormal;
-            else if (rocket_state.sas_mode == SAS_ANTINORMAL) rocket_state.sas_target_vec = vNormal * -1.0f;
-            else if (rocket_state.sas_mode == SAS_RADIAL_IN) rocket_state.sas_target_vec = vRadial;
-            else if (rocket_state.sas_mode == SAS_RADIAL_OUT) rocket_state.sas_target_vec = vRadial * -1.0f;
         }
     }
 
@@ -2012,6 +2004,8 @@ int main() {
         if (hover && hlmb && !hlmb_prev) {
             rocket_state.sas_mode = sas_btns[i].mode;
             rocket_state.sas_active = true;
+            rocket_state.auto_mode = false; // Override autopilot
+            cout << ">> SAS MODE: " << sas_btns[i].label << " (Active)" << endl;
         }
         
         float alpha = (rocket_state.sas_mode == sas_btns[i].mode) ? 0.9f : 0.4f;
@@ -2019,6 +2013,7 @@ int main() {
         renderer->addRect(bx, by, btn_w, btn_h, sas_btns[i].r, sas_btns[i].g, sas_btns[i].b, alpha);
         renderer->drawText(bx, by, sas_btns[i].label, 0.012f, 1, 1, 1, 0.9f, true, Renderer::CENTER);
     }
+    hlmb_prev = hlmb;
 
     // ========================================================================
     } // end if (show_hud)

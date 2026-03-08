@@ -193,33 +193,50 @@ void UpdateManualControl(RocketState& state, ControlInput& input, const ManualIn
                 if (!manual_yaw) input.torque_cmd = -state.ang_vel * damping_gain;
                 if (!manual_pitch) input.torque_cmd_z = -state.ang_vel_z * damping_gain;
                 if (!manual_roll) input.torque_cmd_roll = -state.ang_vel_roll * damping_gain;
-            } else if (state.sas_target_vec.length() > 0.1f) {
-                // Target orientation logic: Align rocket Y+ with sas_target_vec
-                Vec3 rocketY = state.attitude.rotate(Vec3(0, 1, 0));
-                Vec3 targetDir = state.sas_target_vec;
+            } else {
+                // Update target vector based on current orbital state every physics step
+                double rel_vx = state.vx, rel_vy = state.vy, rel_vz = state.vz;
+                double rel_px = state.px, rel_py = state.py, rel_pz = state.pz;
+                double speed = sqrt(rel_vx*rel_vx + rel_vy*rel_vy + rel_vz*rel_vz);
                 
-                // Calculate error quaternion or simple cross-product torque
-                // Simple version: Torque = k * cross(current, target) - damping * velocity
-                Vec3 error = rocketY.cross(targetDir);
-                
-                // Transform world-space error to local-space torque
-                Vec3 localError = state.attitude.conjugate().rotate(error);
-                
-                // Rocket local: Y+ is up/down on flight screen (longitudinal), 
-                // X+ is right, Z+ is out-of-screen (in our HUD projection logic)
-                // BUT in physics_system/main.cpp: 
-                // torque_cmd affects pitch (angle_z), torque_cmd_z affects out-of-plane pitch
-                // Let's align with the manual inputs:
-                // yaw_left/right -> torque_cmd (A/D)
-                // pitch_up/down -> torque_cmd_z (W/S)
-                // roll_left/right -> torque_cmd_roll (Q/E)
-                
-                double kp_sas = 80000.0;
-                double kd_sas = 40000.0;
-                
-                if (!manual_yaw) input.torque_cmd = localError.x * kp_sas - state.ang_vel * kd_sas;
-                if (!manual_pitch) input.torque_cmd_z = localError.z * kp_sas - state.ang_vel_z * kd_sas;
-                if (!manual_roll) input.torque_cmd_roll = -state.ang_vel_roll * kd_sas; // Always damp roll for now
+                if (speed > 0.1) {
+                    Vec3 vPrograde = Vec3((float)(rel_vx / speed), (float)(rel_vy / speed), (float)(rel_vz / speed));
+                    Vec3 posVec((float)rel_px, (float)rel_py, (float)rel_pz);
+                    Vec3 vNormal = vPrograde.cross(posVec).normalized();
+                    Vec3 vRadial = vNormal.cross(vPrograde).normalized();
+
+                    if (state.sas_mode == SAS_PROGRADE) state.sas_target_vec = vPrograde;
+                    else if (state.sas_mode == SAS_RETROGRADE) state.sas_target_vec = vPrograde * -1.0f;
+                    else if (state.sas_mode == SAS_NORMAL) state.sas_target_vec = vNormal;
+                    else if (state.sas_mode == SAS_ANTINORMAL) state.sas_target_vec = vNormal * -1.0f;
+                    else if (state.sas_mode == SAS_RADIAL_IN) state.sas_target_vec = vRadial * -1.0f;
+                    else if (state.sas_mode == SAS_RADIAL_OUT) state.sas_target_vec = vRadial;
+                }
+
+                if (state.sas_target_vec.length() > 0.1f) {
+                    // Target orientation logic: Align rocket nose (forward/longitudinal axis) with sas_target_vec
+                    // According to PhysicsSystem, nose direction is state.attitude.forward()
+                    Vec3 rocketNose = state.attitude.forward();
+                    Vec3 targetDir = state.sas_target_vec;
+                    
+                    // Simple version: Torque = k * cross(current, target) - damping * velocity
+                    Vec3 error = rocketNose.cross(targetDir);
+                    
+                    // Transform world-space error to local-space torque
+                    Vec3 localError = state.attitude.conjugate().rotate(error);
+                    
+                    // Correct mapping based on PhysicsSystem::Update:
+                    // ang_vel_z (Local X) += torque_cmd_z
+                    // ang_vel (Local Z) += torque_cmd
+                    // Local X torque error is in localError.x, Local Z torque error is in localError.z
+                    
+                    double kp_sas = 80000.0;
+                    double kd_sas = 40000.0;
+                    
+                    if (!manual_pitch) input.torque_cmd_z = localError.x * kp_sas - state.ang_vel_z * kd_sas;
+                    if (!manual_yaw) input.torque_cmd = localError.z * kp_sas - state.ang_vel * kd_sas;
+                    if (!manual_roll) input.torque_cmd_roll = -state.ang_vel_roll * kd_sas; // Always damp roll for now
+                }
             }
         }
     }
