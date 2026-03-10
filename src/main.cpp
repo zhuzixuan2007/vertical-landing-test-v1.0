@@ -1557,9 +1557,11 @@ int main() {
         float as_ratio = (float)ww / wh;
 
         // Use a local delta for dragging (calculate once per frame)
-        static float last_pass_mx = 0;
+        static float last_pass_mx = 0, last_pass_my = 0;
         float dmx = mouse_x - last_pass_mx;
+        float dmy = mouse_y - last_pass_my;
         last_pass_mx = mouse_x;
+        last_pass_my = mouse_y;
 
         for (int i = 0; i < (int)rocket_state.maneuvers.size(); i++) {
             ManeuverNode& node = rocket_state.maneuvers[i];
@@ -1612,12 +1614,34 @@ int main() {
                     if (dragging_handle == h && lmb) {
                         Vec3 h_world_next = node_world + h_dir * (handle_dist + 1.0f);
                         Vec2 h_scr_next = ManeuverSystem::projectToScreen(h_world_next, viewMat, macroProjMat, as_ratio);
-                        Vec2 screen_axis = (h_scr_next - h_scr).normalized();
-                        float drag_amount = dmx * screen_axis.x * 800.0f;
-                        if (h == 0) node.delta_v.x += drag_amount; else if (h == 1) node.delta_v.x -= drag_amount;
-                        else if (h == 2) node.delta_v.y += drag_amount; else if (h == 3) node.delta_v.y -= drag_amount;
-                        else if (h == 4) node.delta_v.z += drag_amount; else if (h == 5) node.delta_v.z -= drag_amount;
-                        node.active = true;
+                        Vec2 axis2D = h_scr_next - n_scr;
+                        float screen_len_sq = axis2D.lengthSq();
+                        
+                        if (screen_len_sq > 1e-8f) {
+                            // 1. Immediate displacement-based change
+                            float proj_drag = (dmx * axis2D.x + dmy * axis2D.y) / screen_len_sq;
+                            float sensitivity = 100.0f * sqrtf(screen_len_sq); 
+                            if (h >= 2) sensitivity *= 2.5f; 
+                            float drag_amount = proj_drag * sensitivity;
+
+                            // 2. Continuous rate-based change (Pressure)
+                            // Calculate offset from current handle icon to mouse
+                            float dx_h = mouse_x - h_scr.x;
+                            float dy_h = mouse_y - h_scr.y;
+                            float proj_offset = (dx_h * axis2D.x + dy_h * axis2D.y) / screen_len_sq;
+                            
+                            // If user pulls mouse away from handle center, increase velocity continuously
+                            float rate = 30.0f; // 30 m/s^2 base rate per handle length of offset
+                            if (h >= 2) rate *= 4.0f; 
+                            float continuous_amount = proj_offset * rate * (float)dt;
+
+                            float total_change = drag_amount + continuous_amount;
+
+                            if (h == 0) node.delta_v.x += total_change; else if (h == 1) node.delta_v.x -= total_change;
+                            else if (h == 2) node.delta_v.y += total_change; else if (h == 3) node.delta_v.y -= total_change;
+                            else if (h == 4) node.delta_v.z += total_change; else if (h == 5) node.delta_v.z -= total_change;
+                            node.active = true;
+                        }
                     }
                     Vec3 h_col = ManeuverSystem::getHandleColor(h);
                     if (hd < 0.035f || dragging_handle == h) h_col = h_col * 1.3f;

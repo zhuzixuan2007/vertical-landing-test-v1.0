@@ -22,6 +22,7 @@ struct Vec2 {
   Vec2 operator/(float s) const { float inv = 1.0f / s; return Vec2(x * inv, y * inv); }
 
   float length() const { return sqrtf(x * x + y * y); }
+  float lengthSq() const { return x * x + y * y; }
   Vec2 normalized() const {
     float len = length();
     if (len < 1e-12f) return Vec2(0.0f, 0.0f);
