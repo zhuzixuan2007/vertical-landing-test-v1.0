@@ -7,12 +7,29 @@
 		<BuildType Name="RelWithDebInfo"/>
 		<Platform Name="x64"/>
 	</Configurations>
+	<Project Path="CenterCalculatorTest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="6f53d023-6a10-3b36-ac27-1267945ab3cb">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="_deps/glfw-build/src/glfw.vcxproj"/>
+	</Project>
+	<Project Path="CenterOfLiftTest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="04220b49-c241-3ea0-90fd-cc68894ab7e1">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="CenterOfMassTest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="741b9895-d18d-3cf6-817c-692ec8b55f88">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="CenterOfThrustTest.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="f9ee6443-a0cc-368f-b764-8bbf7ad0ddb0">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
 	<Project Path="RocketSim3D.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="f18eb54e-6606-339a-92a8-4525ef7c6268">
 		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
 		<BuildDependency Project="_deps/glfw-build/src/glfw.vcxproj"/>
 	</Project>
 	<Folder Name="/CMakePredefinedTargets/">
 		<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="5d343fc4-081a-3352-9c12-fa38b6b92aad" DefaultStartup="true">
+			<BuildDependency Project="CenterCalculatorTest.vcxproj"/>
+			<BuildDependency Project="CenterOfLiftTest.vcxproj"/>
+			<BuildDependency Project="CenterOfMassTest.vcxproj"/>
+			<BuildDependency Project="CenterOfThrustTest.vcxproj"/>
 			<BuildDependency Project="RocketSim3D.vcxproj"/>
 			<BuildDependency Project="ZERO_CHECK.vcxproj"/>
 			<BuildDependency Project="_deps/glfw-build/src/glfw.vcxproj"/>

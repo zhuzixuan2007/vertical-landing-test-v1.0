@@ -376,6 +376,8 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\antigravity_code\RocketSim3D\src\physics\physics_system.cpp" />
     <ClCompile Include="C:\antigravity_code\RocketSim3D\src\control\control_system.cpp" />
     <ClCompile Include="C:\antigravity_code\RocketSim3D\src\simulation\stage_manager.cpp" />
+    <ClCompile Include="C:\antigravity_code\RocketSim3D\src\simulation\center_calculator.cpp" />
+    <ClCompile Include="C:\antigravity_code\RocketSim3D\src\simulation\center_visualizer.cpp" />
     <ClCompile Include="C:\antigravity_code\RocketSim3D\vendor\glad\glad.c" />
   </ItemGroup>
   <ItemGroup />

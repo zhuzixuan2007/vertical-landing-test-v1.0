@@ -1,4 +1,8 @@
 C:/antigravity_code/RocketSim3D/build/CMakeFiles/RocketSim3D.dir
+C:/antigravity_code/RocketSim3D/build/CMakeFiles/CenterCalculatorTest.dir
+C:/antigravity_code/RocketSim3D/build/CMakeFiles/CenterOfThrustTest.dir
+C:/antigravity_code/RocketSim3D/build/CMakeFiles/CenterOfLiftTest.dir
+C:/antigravity_code/RocketSim3D/build/CMakeFiles/CenterOfMassTest.dir
 C:/antigravity_code/RocketSim3D/build/CMakeFiles/INSTALL.dir
 C:/antigravity_code/RocketSim3D/build/CMakeFiles/ALL_BUILD.dir
 C:/antigravity_code/RocketSim3D/build/CMakeFiles/ZERO_CHECK.dir

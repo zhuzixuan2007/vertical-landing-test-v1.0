@@ -251,7 +251,7 @@ public:
   // 姿态球 (Navball)
   // pitch: [-PI/2, PI/2], yaw: [0, 2*PI], roll: [-PI, PI]
   void drawAttitudeSphere(float cx, float cy, float radius, const Quat& qRocket, const Vec3& localRight, const Vec3& localUp, const Vec3& localNorth, bool sas_active, bool rcs_active, 
-                          const Vec3& vPrograde, const Vec3& vNormal, const Vec3& vRadial) {
+                          const Vec3& vPrograde, const Vec3& vNormal, const Vec3& vRadial, const Vec3& vManeuver = Vec3(0,0,0)) {
     // 1. 基础圆盘与底座
     addCircle(cx, cy, radius * 1.05f, 0.1f, 0.1f, 0.12f, 0.9f);
     addCircle(cx, cy, radius, 0.2f, 0.2f, 0.22f, 1.0f);
@@ -447,6 +447,10 @@ public:
                 float ang = (k * PI/2.0f) + (PI/4.0f);
                 addLine(mx + cosf(ang)*ms*0.7f, my + sinf(ang)*ms*0.7f, mx + cosf(ang)*ms*1.3f, my + sinf(ang)*ms*1.3f, lw, r, g, b, alpha);
             }
+        } else if (std::string(type) == "MNV") { // Maneuver: Blue "Star" / Cross
+            ms *= 1.1f;
+            drawText(mx, my, "+", ms * 1.5f, r, g, b, alpha, true, Renderer::CENTER);
+            addCircleOutline(mx, my, ms * 0.5f, lw, r, g, b, alpha);
         }
     };
 
@@ -457,6 +461,11 @@ public:
     // Deep blue for radial markers: R=0.1, G=0.2, B=0.9
     drawMarker(vRadial, "R-I", 0.1f, 0.2f, 0.9f);
     drawMarker(vRadial * -1.0f, "R-O", 0.1f, 0.2f, 0.9f);
+    
+    // Maneuver target
+    if (vManeuver.length() > 0.1f) {
+        drawMarker(vManeuver, "MNV", 0.2f, 0.6f, 1.0f);
+    }
   }
 
   enum Align { LEFT, CENTER, RIGHT };

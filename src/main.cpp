@@ -14,6 +14,7 @@
 #include "render/renderer_2d.h"
 #include "simulation/orbit_physics.h"
 #include "simulation/stage_manager.h"
+#include "simulation/maneuver_system.h"
 
 using namespace std;
 
@@ -29,6 +30,8 @@ static void scroll_callback(GLFWwindow* /*w*/, double /*xoffset*/, double yoffse
 
 
 #include "simulation/rocket_builder.h"
+#include "simulation/center_calculator.h"
+#include "simulation/center_visualizer.h"
 #include "save_system.h"
 #include "menu_system.h"
 
@@ -392,11 +395,65 @@ int main() {
         stack_y += def.height;
     }
 
+    // Update center visualization state (detect assembly changes and recalculate)
+    size_t current_hash = CenterCalculator::hashAssembly(builder_state.assembly);
+    if (current_hash != builder_state.centerViz.lastAssemblyHash) {
+        builder_state.centerViz.lastAssemblyHash = current_hash;
+        
+        // Recalculate all center positions
+        builder_state.centerViz.comPos = CenterCalculator::calculateCenterOfMass(builder_state.assembly);
+        builder_state.centerViz.colPos = CenterCalculator::calculateCenterOfLift(builder_state.assembly);
+        builder_state.centerViz.cotPos = CenterCalculator::calculateCenterOfThrust(builder_state.assembly);
+        
+        // Update validity flags
+        builder_state.centerViz.hasCoM = !builder_state.assembly.parts.empty();
+        builder_state.centerViz.hasCoL = (builder_state.centerViz.colPos.y > 0.0f);
+        builder_state.centerViz.hasCoT = builder_state.assembly.hasEngine();
+    }
+    
+    // Render center point markers (if enabled)
+    Mat4 rocketTransform; // Default constructor creates identity matrix
+    
+    if (builder_state.centerViz.showCoM && builder_state.centerViz.hasCoM) {
+        std::cout << "Rendering CoM at y=" << builder_state.centerViz.comPos.y << std::endl;
+        CenterVisualizer::renderMarker(r3d, builder_state.centerViz.comPos, 
+                                      CenterVisualizer::MARKER_COM, rocketTransform);
+    }
+    
+    if (builder_state.centerViz.showCoL && builder_state.centerViz.hasCoL) {
+        std::cout << "Rendering CoL at y=" << builder_state.centerViz.colPos.y << std::endl;
+        CenterVisualizer::renderMarker(r3d, builder_state.centerViz.colPos, 
+                                      CenterVisualizer::MARKER_COL, rocketTransform);
+    }
+    
+    if (builder_state.centerViz.showCoT && builder_state.centerViz.hasCoT) {
+        std::cout << "Rendering CoT at y=" << builder_state.centerViz.cotPos.y << std::endl;
+        CenterVisualizer::renderMarker(r3d, builder_state.centerViz.cotPos, 
+                                      CenterVisualizer::MARKER_COT, rocketTransform);
+    }
+
     r3d->endFrame();
 
     // Render builder UI OVERLAY (clear depth buffer so 2D renders on top)
     glClear(GL_DEPTH_BUFFER_BIT);
     renderer->beginFrame();
+    
+    // Render center point labels (2D overlay)
+    if (builder_state.centerViz.showCoM && builder_state.centerViz.hasCoM) {
+        CenterVisualizer::renderLabel(renderer, builder_state.centerViz.comPos, 
+                                     "CoM", viewMat * projMat);
+    }
+    
+    if (builder_state.centerViz.showCoL && builder_state.centerViz.hasCoL) {
+        CenterVisualizer::renderLabel(renderer, builder_state.centerViz.colPos, 
+                                     "CoL", viewMat * projMat);
+    }
+    
+    if (builder_state.centerViz.showCoT && builder_state.centerViz.hasCoT) {
+        CenterVisualizer::renderLabel(renderer, builder_state.centerViz.cotPos, 
+                                     "CoT", viewMat * projMat);
+    }
+    
     drawBuilderUI_KSP(renderer, builder_state, (float)glfwGetTime());
     renderer->endFrame();
 
@@ -556,6 +613,32 @@ int main() {
         }
         g_scroll_y = 0.0f;
       }
+    }
+
+    // --- Maneuver Node Input Handling (Basic) ---
+    static int dragging_handle = -1;
+    static float last_drag_mx = 0;
+    if (cam_mode_3d == 2) {
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        int ww, wh; glfwGetWindowSize(window, &ww, &wh);
+        float mouse_x = (float)(mx / ww * 2.0 - 1.0);
+        bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (!lmb) dragging_handle = -1;
+        
+        if (dragging_handle != -1 && lmb) {
+            float dx = (mouse_x - last_drag_mx) * 1000.0f;
+            if (rocket_state.selected_maneuver_index != -1) {
+                ManeuverNode& node = rocket_state.maneuvers[rocket_state.selected_maneuver_index];
+                if (dragging_handle == 0) node.delta_v.x += dx;
+                else if (dragging_handle == 1) node.delta_v.x -= dx;
+                else if (dragging_handle == 2) node.delta_v.y += dx;
+                else if (dragging_handle == 3) node.delta_v.y -= dx;
+                else if (dragging_handle == 4) node.delta_v.z += dx;
+                else if (dragging_handle == 5) node.delta_v.z -= dx;
+                node.active = true;
+            }
+        }
+        last_drag_mx = mouse_x;
     }
 
     // --- H 键切换 HUD 显示 ---
@@ -1393,6 +1476,105 @@ int main() {
             }
           }
         }
+
+        // --- Maneuver Nodes & Predicted Orbits ---
+        double mx_raw, my_raw; glfwGetCursorPos(window, &mx_raw, &my_raw);
+        int ww_px, wh_px; glfwGetWindowSize(window, &ww_px, &wh_px);
+        float mouse_x = (float)(mx_raw / ww_px * 2.0 - 1.0);
+        float mouse_y = (float)(1.0 - my_raw / wh_px * 2.0);
+        bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        static bool lmb_prev_mnv = false;
+
+        double mu_body = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
+        float as_ratio = (float)ww_px / wh_px;
+
+        for (int i = 0; i < (int)rocket_state.maneuvers.size(); i++) {
+            ManeuverNode& node = rocket_state.maneuvers[i];
+            double dt_node = node.sim_time - rocket_state.sim_time;
+            double nx, ny, nvx, nvy;
+            getStateAtTime(rocket_state.px, rocket_state.py, rocket_state.vx, rocket_state.vy, mu_body, dt_node, nx, ny, nvx, nvy);
+            
+            Vec3 node_world((float)(SOLAR_SYSTEM[current_soi_index].px * ws_d + nx * ws_d - ro_x), 
+                           (float)(SOLAR_SYSTEM[current_soi_index].py * ws_d + ny * ws_d - ro_y), 
+                           (float)(SOLAR_SYSTEM[current_soi_index].pz * ws_d - ro_z));
+            
+            Vec2 n_scr = ManeuverSystem::projectToScreen(node_world, viewMat, macroProjMat, as_ratio);
+            float d_mouse = sqrtf(powf(n_scr.x - mouse_x, 2) + powf(n_scr.y - mouse_y, 2));
+
+            if (lmb && !lmb_prev_mnv && d_mouse < 0.04f) {
+                rocket_state.selected_maneuver_index = i;
+            }
+
+            // Draw Icon
+            r3d->drawBillboard(node_world, earth_r * 0.08f, 0.2f, 0.6f, 1.0f, 0.9f);
+            
+            if (rocket_state.selected_maneuver_index == i) {
+                ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)nx, (float)ny, 0), Vec3((float)nvx, (float)nvy, 0));
+                for (int h = 0; h < 6; h++) {
+                    Vec3 h_dir = ManeuverSystem::getHandleDir(frame, h);
+                    Vec3 h_world = node_world + h_dir * (earth_r * 0.2f);
+                    Vec2 h_scr = ManeuverSystem::projectToScreen(h_world, viewMat, macroProjMat, as_ratio);
+                    float hd = sqrtf(powf(h_scr.x - mouse_x, 2) + powf(h_scr.y - mouse_y, 2));
+                    if (lmb && !lmb_prev_mnv && hd < 0.03f) dragging_handle = h;
+                    
+                    Vec3 h_col = ManeuverSystem::getHandleColor(h);
+                    r3d->drawBillboard(h_world, earth_r * 0.04f, h_col.x, h_col.y, h_col.z, 0.9f);
+                }
+                
+                // Predicted Orbit (Dashed)
+                if (node.active) {
+                    double pvx = nvx + frame.prograde.x * node.delta_v.x + frame.normal.x * node.delta_v.y + frame.radial.x * node.delta_v.z;
+                    double pvy = nvy + frame.prograde.y * node.delta_v.x + frame.normal.y * node.delta_v.y + frame.radial.y * node.delta_v.z;
+                    
+                    // Predict orbit path from node position
+                    double p_energy = 0.5 * (pvx*pvx + pvy*pvy) - mu_body / sqrt(nx*nx + ny*ny);
+                    double p_a = -mu_body / (2.0 * p_energy);
+                    if (p_a > 0) { // Ellipse
+                        Vec3 p_h_vec = Vec3((float)nx, (float)ny, 0).cross(Vec3((float)pvx, (float)pvy, 0));
+                        Vec3 p_e_vec = Vec3((float)pvx, (float)pvy, 0).cross(p_h_vec) / (float)mu_body - Vec3((float)nx, (float)ny, 0) / (float)sqrt(nx*nx+ny*ny);
+                        float p_ecc = p_e_vec.length();
+                        float p_b = (float)p_a * sqrtf(fmaxf(0.0f, 1.0f - p_ecc * p_ecc));
+                        Vec3 p_e_dir = p_ecc > 1e-6f ? p_e_vec / p_ecc : Vec3(1,0,0);
+                        Vec3 p_perp = p_h_vec.normalized().cross(p_e_dir);
+                        Vec3 p_center = p_e_dir * (-(float)p_a * p_ecc);
+
+                        std::vector<Vec3> p_pts;
+                        int segs = 100;
+                        for (int s = 0; s <= segs; s++) {
+                            float ang = (float)s / segs * 2.0f * PI;
+                            Vec3 pt_rel = p_center + p_e_dir * ((float)p_a * cosf(ang)) + p_perp * (p_b * sinf(ang));
+                            Vec3 pt_w((float)(SOLAR_SYSTEM[current_soi_index].px * ws_d + pt_rel.x * ws_d - ro_x),
+                                      (float)(SOLAR_SYSTEM[current_soi_index].py * ws_d + pt_rel.y * ws_d - ro_y),
+                                      (float)(SOLAR_SYSTEM[current_soi_index].pz * ws_d - ro_z));
+                            
+                            p_pts.push_back(pt_w);
+                        }
+                        
+                        // Draw dashed segments
+                        float ribbon_w = earth_r * 0.002f * fmaxf(1.0f, cam_zoom_pan * 0.5f);
+                        for (size_t s = 0; s < p_pts.size() - 1; s += 4) {
+                            std::vector<Vec3> sub; sub.push_back(p_pts[s]); 
+                            if (s+1 < p_pts.size()) sub.push_back(p_pts[s+1]);
+                            if (s+2 < p_pts.size()) sub.push_back(p_pts[s+2]);
+                            r3d->drawRibbon(sub, ribbon_w, 1.0f, 1.0f, 1.0f, 0.7f);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // --- Click on empty orbit to create node ---
+        if (lmb && !lmb_prev_mnv && rocket_state.selected_maneuver_index == -1) {
+            if (rocket_state.maneuvers.empty()) {
+                ManeuverNode newNode;
+                newNode.sim_time = rocket_state.sim_time + 600.0; // 10 mins ahead
+                newNode.delta_v = Vec3(0,0,0);
+                newNode.active = true;
+                rocket_state.maneuvers.push_back(newNode);
+                rocket_state.selected_maneuver_index = 0;
+            }
+        }
+        lmb_prev_mnv = lmb;
       }
 
 
@@ -1976,8 +2158,29 @@ int main() {
         }
     }
 
+    // Maneuver target calculation
+    Vec3 vManeuver(0,0,0);
+    double dv_remaining = 0;
+    if (rocket_state.selected_maneuver_index != -1 && (size_t)rocket_state.selected_maneuver_index < rocket_state.maneuvers.size()) {
+        ManeuverNode& node = rocket_state.maneuvers[rocket_state.selected_maneuver_index];
+        double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
+        double nx, ny, nvx, nvy;
+        getStateAtTime(rocket_state.px, rocket_state.py, rocket_state.vx, rocket_state.vy, mu, node.sim_time - rocket_state.sim_time, nx, ny, nvx, nvy);
+        ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)nx, (float)ny, 0), Vec3((float)nvx, (float)nvy, 0));
+        Vec3 target_vel = Vec3((float)nvx, (float)nvy, 0) + (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z);
+        vManeuver = target_vel.normalized();
+        dv_remaining = node.delta_v.length();
+    }
+
     // 直接使用四元数投影，彻底解决万向锁和翻转问题
-    renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth, rocket_state.sas_active, rocket_state.rcs_active, vPrograde, vNormal, vRadial);
+    renderer->drawAttitudeSphere(nav_x, nav_y, nav_rad, rocketQuat, localRight, rocketUp, localNorth, rocket_state.sas_active, rocket_state.rcs_active, vPrograde, vNormal, vRadial, vManeuver);
+
+    // --- Maneuver Info (Next to Navball) ---
+    if (dv_remaining > 0.1) {
+        renderer->drawText(nav_x + nav_rad + 0.05f, nav_y, "MNV BV", 0.015f, 0.2f, 0.6f, 1.0f, 1.0f);
+        char dv_str[32]; snprintf(dv_str, sizeof(dv_str), "%.1f m/s", dv_remaining);
+        renderer->drawText(nav_x + nav_rad + 0.05f, nav_y - 0.03f, dv_str, 0.02f, 1.0f, 1.0f, 1.0f, 1.0f);
+    }
 
     // --- 8. SAS 模式按钮 (位于导航球右侧) ---
     float btn_start_x = nav_x + nav_rad + 0.12f;

@@ -5,6 +5,7 @@
 // ==========================================================
 
 #include "core/rocket_state.h"
+#include "math/math3d.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -233,10 +234,36 @@ struct RocketAssembly {
 };
 
 // ==========================================================
+// Center Visualization State — state for center point visualization
+// ==========================================================
+struct CenterVisualizationState {
+    // Display flags
+    bool showCoM = false;
+    bool showCoL = false;
+    bool showCoT = false;
+    
+    // Calculated positions (rocket local coordinate system, Y-axis up)
+    Vec3 comPos = Vec3(0, 0, 0);
+    Vec3 colPos = Vec3(0, 0, 0);
+    Vec3 cotPos = Vec3(0, 0, 0);
+    
+    // Validity flags (e.g., CoT invalid when no engines)
+    bool hasCoM = false;
+    bool hasCoL = false;
+    bool hasCoT = false;
+    
+    // Last assembly hash (used to detect changes)
+    size_t lastAssemblyHash = 0;
+};
+
+// ==========================================================
 // Builder State — UI state for the builder screen
 // ==========================================================
 struct BuilderState {
     RocketAssembly assembly;
+    
+    // Center visualization state
+    CenterVisualizationState centerViz;
 
     // UI navigation
     int selected_category = 0;       // which category tab is active
@@ -467,6 +494,54 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, float time) {
     drawBuilderInt(r, 0.65f, stat_y2, (int)bs.assembly.total_height, 0.016f, 0.6f, 0.7f, 0.9f);
     drawBuilderText(r, 0.82f, stat_y2, "m", 0.011f, 0.4f, 0.5f, 0.6f);
 
+    // ---- Center Visualization Toggle Buttons ----
+    float btn_x = asm_panel_x;
+    float btn_w = 0.30f;
+    float btn_h = 0.05f;
+    float btn_spacing = 0.06f;
+    
+    // CoM Button
+    float com_btn_y = 0.05f;
+    bool com_enabled = bs.centerViz.hasCoM;
+    bool com_active = bs.centerViz.showCoM;
+    float com_br = com_enabled ? (com_active ? 0.15f : 0.08f) : 0.05f;
+    float com_bg = com_enabled ? (com_active ? 0.35f : 0.12f) : 0.05f;
+    float com_bb = com_enabled ? (com_active ? 0.70f : 0.15f) : 0.05f;
+    float com_ba = com_enabled ? 0.8f : 0.3f;
+    r->addRect(btn_x, com_btn_y, btn_w, btn_h, com_br, com_bg, com_bb, com_ba);
+    float com_tr = com_enabled ? (com_active ? 0.5f : 0.4f) : 0.3f;
+    float com_tg = com_enabled ? (com_active ? 0.9f : 0.5f) : 0.3f;
+    float com_tb = com_enabled ? (com_active ? 1.0f : 0.6f) : 0.3f;
+    drawBuilderText(r, btn_x - 0.10f, com_btn_y, "CoM", 0.011f, com_tr, com_tg, com_tb);
+    
+    // CoL Button
+    float col_btn_y = com_btn_y - btn_spacing;
+    bool col_enabled = bs.centerViz.hasCoL;
+    bool col_active = bs.centerViz.showCoL;
+    float col_br = col_enabled ? (col_active ? 0.70f : 0.08f) : 0.05f;
+    float col_bg = col_enabled ? (col_active ? 0.55f : 0.12f) : 0.05f;
+    float col_bb = col_enabled ? (col_active ? 0.15f : 0.15f) : 0.05f;
+    float col_ba = col_enabled ? 0.8f : 0.3f;
+    r->addRect(btn_x, col_btn_y, btn_w, btn_h, col_br, col_bg, col_bb, col_ba);
+    float col_tr = col_enabled ? (col_active ? 1.0f : 0.4f) : 0.3f;
+    float col_tg = col_enabled ? (col_active ? 0.9f : 0.5f) : 0.3f;
+    float col_tb = col_enabled ? (col_active ? 0.5f : 0.6f) : 0.3f;
+    drawBuilderText(r, btn_x - 0.10f, col_btn_y, "CoL", 0.011f, col_tr, col_tg, col_tb);
+    
+    // CoT Button
+    float cot_btn_y = col_btn_y - btn_spacing;
+    bool cot_enabled = bs.centerViz.hasCoT;
+    bool cot_active = bs.centerViz.showCoT;
+    float cot_br = cot_enabled ? (cot_active ? 0.70f : 0.08f) : 0.05f;
+    float cot_bg = cot_enabled ? (cot_active ? 0.15f : 0.12f) : 0.05f;
+    float cot_bb = cot_enabled ? (cot_active ? 0.15f : 0.15f) : 0.05f;
+    float cot_ba = cot_enabled ? 0.8f : 0.3f;
+    r->addRect(btn_x, cot_btn_y, btn_w, btn_h, cot_br, cot_bg, cot_bb, cot_ba);
+    float cot_tr = cot_enabled ? (cot_active ? 1.0f : 0.4f) : 0.3f;
+    float cot_tg = cot_enabled ? (cot_active ? 0.5f : 0.5f) : 0.3f;
+    float cot_tb = cot_enabled ? (cot_active ? 0.5f : 0.6f) : 0.3f;
+    drawBuilderText(r, btn_x - 0.10f, cot_btn_y, "CoT", 0.011f, cot_tr, cot_tg, cot_tb);
+
     // ---- Launch Button / Prompt ----
     bool can_launch = bs.assembly.hasEngine() && !bs.assembly.parts.empty();
     if (can_launch) {
@@ -572,7 +647,40 @@ inline bool builderHandleInput(BuilderState& bs, const BuilderKeyState& keys,
             }
         }
 
-        // 4. Launch Button
+        // 4. Center Visualization Toggle Buttons
+        float btn_x = 0.62f;
+        float btn_w = 0.30f;
+        float btn_h = 0.05f;
+        float btn_spacing = 0.06f;
+        
+        // CoM Button
+        float com_btn_y = 0.05f;
+        if (bs.centerViz.hasCoM && builderCheckHit(keys.mx, keys.my, btn_x, com_btn_y, btn_w, btn_h)) {
+            if (lmb_clicked) {
+                bs.centerViz.showCoM = !bs.centerViz.showCoM;
+                std::cout << "CoM button clicked! showCoM = " << bs.centerViz.showCoM << std::endl;
+            }
+        }
+        
+        // CoL Button
+        float col_btn_y = com_btn_y - btn_spacing;
+        if (bs.centerViz.hasCoL && builderCheckHit(keys.mx, keys.my, btn_x, col_btn_y, btn_w, btn_h)) {
+            if (lmb_clicked) {
+                bs.centerViz.showCoL = !bs.centerViz.showCoL;
+                std::cout << "CoL button clicked! showCoL = " << bs.centerViz.showCoL << std::endl;
+            }
+        }
+        
+        // CoT Button
+        float cot_btn_y = col_btn_y - btn_spacing;
+        if (bs.centerViz.hasCoT && builderCheckHit(keys.mx, keys.my, btn_x, cot_btn_y, btn_w, btn_h)) {
+            if (lmb_clicked) {
+                bs.centerViz.showCoT = !bs.centerViz.showCoT;
+                std::cout << "CoT button clicked! showCoT = " << bs.centerViz.showCoT << std::endl;
+            }
+        }
+        
+        // 5. Launch Button
         if (bs.assembly.hasEngine() && !bs.assembly.parts.empty()) {
             if (builderCheckHit(keys.mx, keys.my, 0.0f, -0.93f, 0.60f, 0.08f)) {
                 if (lmb_clicked) return true;

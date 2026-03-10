@@ -8,7 +8,9 @@
 #include "math/math3d.h"
 
 // Constants
+#ifndef PI
 constexpr double PI = 3.14159265358979323846;
+#endif
 constexpr double G0 = 9.80665;             // Standard gravity (m/s^2)
 constexpr double EARTH_RADIUS = 6371000.0; // Earth radius (m)
 constexpr double SLP = 1013.25;            // Sea level pressure (hPa)
@@ -126,6 +128,14 @@ struct SmokeParticle {
     bool active;
 };
 
+// Maneuver Node data
+struct ManeuverNode {
+    double sim_time;          // Time of maneuver
+    Vec3 delta_v;             // (Prograde, Normal, Radial) components in meters/sec
+    bool active = true;
+    bool selected = false;
+};
+
 // Per-stage physical configuration
 struct StageConfig {
     double dry_mass = 0;          // Dry mass of this stage (kg)
@@ -235,6 +245,10 @@ struct RocketState {
     PID pid_att = {40000.0, 0.0, 100000.0}; 
     PID pid_att_z = {40000.0, 0.0, 100000.0};
     PID pid_att_roll = {40000.0, 0.0, 100000.0};
+
+    // Maneuver Nodes
+    std::vector<ManeuverNode> maneuvers;
+    int selected_maneuver_index = -1;
 };
 
 #endif // ROCKET_STATE_H

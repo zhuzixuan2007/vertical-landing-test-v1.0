@@ -45,6 +45,8 @@ set(SOURCES
     src/physics/physics_system.cpp
     src/control/control_system.cpp
     src/simulation/stage_manager.cpp
+    src/simulation/center_calculator.cpp
+    src/simulation/center_visualizer.cpp
     vendor/glad/glad.c
 )
 
@@ -53,3 +55,29 @@ add_executable(RocketSim3D ${SOURCES})
 
 # 8. 将第三方库链接到我们的程序上
 target_link_libraries(RocketSim3D PRIVATE OpenGL::GL glfw)
+
+# 9. 添加测试可执行文件
+set(TEST_SOURCES
+    src/simulation/center_calculator_test.cpp
+    src/simulation/center_calculator.cpp
+    src/simulation/center_visualizer.cpp
+    src/physics/physics_system.cpp
+    src/control/control_system.cpp
+    src/simulation/stage_manager.cpp
+    vendor/glad/glad.c
+)
+
+add_executable(CenterCalculatorTest ${TEST_SOURCES})
+target_link_libraries(CenterCalculatorTest PRIVATE OpenGL::GL glfw)
+
+# 10. 添加推力中心测试可执行文件（独立测试，不依赖完整项目）
+add_executable(CenterOfThrustTest test_center_of_thrust.cpp)
+# 不需要链接库，因为是纯计算测试
+
+# 11. 添加升力中心测试可执行文件（独立测试，不依赖完整项目）
+add_executable(CenterOfLiftTest test_center_of_lift_standalone.cpp)
+# 不需要链接库，因为是纯计算测试
+
+# 12. 添加质心测试可执行文件（独立测试，不依赖完整项目）
+add_executable(CenterOfMassTest test_center_of_mass_standalone.cpp)
+# 不需要链接库，因为是纯计算测试
