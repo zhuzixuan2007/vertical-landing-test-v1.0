@@ -82,7 +82,8 @@ enum SASMode {
     SAS_NORMAL,
     SAS_ANTINORMAL,
     SAS_RADIAL_IN,
-    SAS_RADIAL_OUT
+    SAS_RADIAL_OUT,
+    SAS_MANEUVER
 };
 
 // Simple utility function needed by state logic

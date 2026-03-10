@@ -2280,18 +2280,22 @@ int main() {
         }
     }
 
-    // Maneuver target calculation
+    // Maneuver target calculation (3D & Real-time)
     Vec3 vManeuver(0,0,0);
     double dv_remaining = 0;
     if (rocket_state.selected_maneuver_index != -1 && (size_t)rocket_state.selected_maneuver_index < rocket_state.maneuvers.size()) {
         ManeuverNode& node = rocket_state.maneuvers[rocket_state.selected_maneuver_index];
         double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
-        double nx, ny, nvx, nvy;
-        getStateAtTime(rocket_state.px, rocket_state.py, rocket_state.vx, rocket_state.vy, mu, node.sim_time - rocket_state.sim_time, nx, ny, nvx, nvy);
-        ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)nx, (float)ny, 0), Vec3((float)nvx, (float)nvy, 0));
-        Vec3 target_vel = Vec3((float)nvx, (float)nvy, 0) + (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z);
-        vManeuver = target_vel.normalized();
-        dv_remaining = node.delta_v.length();
+        double npx, npy, npz, nvx, nvy, nvz;
+        
+        // Project CURRENT state to node time
+        get3DStateAtTime(rocket_state.px, rocket_state.py, rocket_state.pz, rocket_state.vx, rocket_state.vy, rocket_state.vz, mu, node.sim_time - rocket_state.sim_time, npx, npy, npz, nvx, nvy, nvz);
+        ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
+        
+        // The delta-v vector required in world space
+        Vec3 target_dv_world = frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z;
+        dv_remaining = (double)target_dv_world.length();
+        if (dv_remaining > 0.05) vManeuver = target_dv_world.normalized();
     }
 
     // 直接使用四元数投影，彻底解决万向锁和翻转问题
@@ -2318,7 +2322,8 @@ int main() {
         {SAS_NORMAL, "NRM", 0.8f, 0.2f, 0.8f},
         {SAS_ANTINORMAL, "ANT", 0.5f, 0.1f, 0.5f},
         {SAS_RADIAL_IN, "R-I", 0.2f, 0.5f, 0.8f},
-        {SAS_RADIAL_OUT, "R-O", 0.1f, 0.3f, 0.6f}
+        {SAS_RADIAL_OUT, "R-O", 0.1f, 0.3f, 0.6f},
+        {SAS_MANEUVER, "MNV", 0.3f, 0.6f, 1.0f}
     };
 
     for (int i = 0; i < (int)sas_btns.size(); i++) {

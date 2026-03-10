@@ -1,5 +1,7 @@
 #include "control_system.h"
 #include "physics/physics_system.h"
+#include "simulation/maneuver_system.h"
+#include "simulation/orbit_physics.h"
 #include <algorithm>
 #include <cmath>
 
@@ -209,6 +211,24 @@ void UpdateManualControl(RocketState& state, const RocketConfig& config, Control
                     else if (state.sas_mode == SAS_ANTINORMAL) state.sas_target_vec = vN * -1.0f;
                     else if (state.sas_mode == SAS_RADIAL_IN) state.sas_target_vec = vR * -1.0f;
                     else if (state.sas_mode == SAS_RADIAL_OUT) state.sas_target_vec = vR;
+                    else if (state.sas_mode == SAS_MANEUVER && state.selected_maneuver_index != -1 && (size_t)state.selected_maneuver_index < state.maneuvers.size()) {
+                        ManeuverNode& node = state.maneuvers[state.selected_maneuver_index];
+                        double dt_node = node.sim_time - state.sim_time;
+                        double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
+                        
+                        double npx, npy, npz, nvx, nvy, nvz;
+                        // Project CURRENT state to node time
+                        get3DStateAtTime(state.px, state.py, state.pz, state.vx, state.vy, state.vz, mu, dt_node, npx, npy, npz, nvx, nvy, nvz);
+                        
+                        // We need to know what the target velocity was supposed to be.
+                        // The node's delta_v is defined in the frame of the orbit *at the time of creation/modification*.
+                        // However, we can approximate: target = V_proj_at_node + deltaV_local_frame
+                        ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
+                        Vec3 target_dv_world = frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z;
+                        
+                        state.sas_target_vec = target_dv_world.normalized();
+                        if (target_dv_world.length() < 0.05f) state.sas_target_vec = Vec3(0,0,0);
+                    }
                 }
 
                 if (state.sas_target_vec.length() > 0.1f) {

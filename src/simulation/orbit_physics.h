@@ -114,55 +114,69 @@ inline void drawOrbit(Renderer *renderer, double px, double py, double vx, doubl
 // px, py, vx, vy: Current relative state to body
 // mu: Gravitational parameter
 // dt: Time into future (seconds)
-inline void getStateAtTime(double px, double py, double vx, double vy, double mu, double dt,
-                    double& out_px, double& out_py, double& out_vx, double& out_vy) {
-    double r_mag = std::sqrt(px * px + py * py);
-    double v_sq = vx * vx + vy * vy;
-    double h = px * vy - py * vx;
-    if (std::abs(h) < 1.0) return;
+// Predict 3D state (pos, vel) at a future time T relative to current state
+inline void get3DStateAtTime(double px, double py, double pz, double vx, double vy, double vz, double mu, double dt,
+                        double& out_px, double& out_py, double& out_pz, double& out_vx, double& out_vy, double& out_vz) {
+    Vec3 r_vec((float)px, (float)py, (float)pz);
+    Vec3 v_vec((float)vx, (float)vy, (float)vz);
+    double r_mag = r_vec.length();
+    double v_sq = v_vec.lengthSq();
+    Vec3 h_vec = r_vec.cross(v_vec);
+    double h_mag = h_vec.length();
+    
+    if (h_mag < 1e-3 || r_mag < 1.0) { 
+        out_px = px; out_py = py; out_pz = pz;
+        out_vx = vx; out_vy = vy; out_vz = vz;
+        return;
+    }
 
     double energy = 0.5 * v_sq - mu / r_mag;
     double a = -mu / (2.0 * energy);
     
-    // eccentricity vector
-    double ex = (vy * h) / mu - px / r_mag;
-    double ey = (-vx * h) / mu - py / r_mag;
-    double e = std::sqrt(ex * ex + ey * ey);
+    Vec3 e_vec = v_vec.cross(h_vec) / (float)mu - r_vec / (float)r_mag;
+    double e = e_vec.length();
 
-    if (e >= 1.0) {
-        // Hyperbolic (not implemented for simplicity, just return current)
-        out_px = px; out_py = py; out_vx = vx; out_vy = vy;
+    if (e >= 1.0) { // Hyperbolic (Return linear approximation)
+        out_px = px + vx * dt; out_py = py + vy * dt; out_pz = pz + vz * dt;
+        out_vx = vx; out_vy = vy; out_vz = vz;
         return;
     }
 
-    double period = 2.0 * PI * std::sqrt(a * a * a / mu);
+    double b = a * std::sqrt(1.0 - e*e);
+    Vec3 e_dir = (e > 1e-7f) ? e_vec.normalized() : Vec3(1, 0, 0);
+    Vec3 n_dir = h_vec.normalized();
+    Vec3 p_dir = n_dir.cross(e_dir).normalized(); 
+    
     double cos_E = (a - r_mag) / (a * e);
-    double sin_E = (px * vx + py * vy) / (e * std::sqrt(mu * a));
+    double r_dot_e = r_vec.dot(e_dir);
+    double r_dot_p = r_vec.dot(p_dir);
+    cos_E = (r_dot_e / a) + e;
+    double sin_E = r_dot_p / b;
+    
     double E0 = std::atan2(sin_E, cos_E);
     double M0 = E0 - e * std::sin(E0);
-
+    double period = 2.0 * PI * std::sqrt(a * a * a / mu);
     double M_target = M0 + (2.0 * PI * dt / period);
     
-    // Newton-Raphson to solve Kepler's equation M = E - e*sin(E)
     double E = M_target;
     for (int i = 0; i < 10; i++) {
         E = E - (E - e * std::sin(E) - M_target) / (1.0 - e * std::cos(E));
     }
 
-    double cos_nu = (std::cos(E) - e) / (1.0 - e * std::cos(E));
-    double sin_nu = (std::sqrt(1.0 - e * e) * std::sin(E)) / (1.0 - e * std::cos(E));
-    double r = a * (1.0 - e * std::cos(E));
-    
-    double orbit_angle = std::atan2(ey, ex);
-    double nu = std::atan2(sin_nu, cos_nu);
-    
-    out_px = r * std::cos(nu + orbit_angle);
-    out_py = r * std::sin(nu + orbit_angle);
-    
-    double v_radial = std::sqrt(mu / (a * (1.0 - e * e))) * e * std::sin(nu);
-    double v_tangent = std::sqrt(mu / (a * (1.0 - e * e))) * (1.0 + e * std::cos(nu));
-    
-    double total_angle = nu + orbit_angle;
-    out_vx = v_radial * std::cos(total_angle) - v_tangent * std::sin(total_angle);
-    out_vy = v_radial * std::sin(total_angle) + v_tangent * std::cos(total_angle);
+    double x_p = a * (std::cos(E) - e);
+    double y_p = b * std::sin(E);
+    Vec3 r_new = e_dir * (float)x_p + p_dir * (float)y_p;
+    out_px = r_new.x; out_py = r_new.y; out_pz = r_new.z;
+
+    double E_dot = std::sqrt(mu / (a * a * a)) / (1.0 - e * std::cos(E));
+    double vx_p = -a * std::sin(E) * E_dot;
+    double vy_p = b * std::cos(E) * E_dot;
+    Vec3 v_new = e_dir * (float)vx_p + p_dir * (float)vy_p;
+    out_vx = v_new.x; out_vy = v_new.y; out_vz = v_new.z;
+}
+
+inline void getStateAtTime(double px, double py, double vx, double vy, double mu, double dt,
+                    double& out_px, double& out_py, double& out_vx, double& out_vy) {
+    double opz, ovz;
+    get3DStateAtTime(px, py, 0, vx, vy, 0, mu, dt, out_px, out_py, opz, out_vx, out_vy, ovz);
 }
