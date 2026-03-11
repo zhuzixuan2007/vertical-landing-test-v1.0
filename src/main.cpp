@@ -2158,14 +2158,24 @@ int main() {
             Vec2 n_scr = ManeuverSystem::projectToScreen(node_world, viewMat, macroProjMat, as_ratio);
             
             // Popup layout - enlarged for sliders, time info, reference frame
-            float pop_x = n_scr.x + 0.22f, pop_y = n_scr.y;
-            float pw = 0.38f, ph = 0.55f;
-            
-            // Clamp popup to stay within screen bounds
-            if (pop_x + pw/2 > 0.98f) pop_x = 0.98f - pw/2;
-            if (pop_x - pw/2 < -0.98f) pop_x = -0.98f + pw/2;
-            if (pop_y + ph/2 > 0.98f) pop_y = 0.98f - ph/2;
-            if (pop_y - ph/2 < -0.98f) pop_y = -0.98f + ph/2;
+            float pop_x, pop_y, pw, ph;
+            if (adv_embed_mnv && adv_orbit_menu) {
+                pop_x = mnv_popup_px;
+                pop_y = mnv_popup_py;
+                pw = mnv_popup_pw;
+                ph = mnv_popup_ph;
+            } else {
+                pop_x = n_scr.x + 0.22f;
+                pop_y = n_scr.y;
+                pw = 0.38f;
+                ph = 0.55f;
+                
+                // Clamp popup to stay within screen bounds
+                if (pop_x + pw/2 > 0.98f) pop_x = 0.98f - pw/2;
+                if (pop_x - pw/2 < -0.98f) pop_x = -0.98f + pw/2;
+                if (pop_y + ph/2 > 0.98f) pop_y = 0.98f - ph/2;
+                if (pop_y - ph/2 < -0.98f) pop_y = -0.98f + ph/2;
+            }
             
             // Cache popup bounds
             cached_popup_x = pop_x; cached_popup_y = pop_y;
@@ -2230,10 +2240,16 @@ int main() {
             float slider_track_w = pw * 0.65f;
             float slider_track_h = 0.012f;
             float slider_thumb_w = 0.012f, slider_thumb_h = 0.022f;
-            float title_y_layout = pop_y + ph/2 - 0.025f;
-            float slider_base_y = title_y_layout - 0.06f;
-            float slider_spacing = 0.065f;
+            float title_y_layout = pop_y + ph/2 - (adv_embed_mnv ? 0.015f : 0.025f);
+            float slider_base_y = title_y_layout - (adv_embed_mnv ? 0.04f : 0.06f);
+            float slider_spacing = adv_embed_mnv ? 0.050f : 0.065f;
             float slider_cx = pop_x + 0.02f; // center of slider track
+            
+            float sep_y = slider_base_y - 4 * slider_spacing + 0.025f;
+            float info_y = sep_y - 0.05f; // time to node
+            info_y -= 0.025f; // estimated burn time
+            float mode_btn_y = info_y - 0.045f;
+            float del_btn_y = pop_y - ph/2 + (adv_embed_mnv ? 0.015f : 0.025f);
             
             // State for deferred rendering
             mnv_popup_burn_mode = node.burn_mode;
@@ -2242,14 +2258,13 @@ int main() {
             float close_size = 0.028f;
             float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
             float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
-            mnv_popup_close_hover = (mouse_x >= close_x - close_size/2 && mouse_x <= close_x + close_size/2 &&
-                                mouse_y >= close_y - close_size/2 && mouse_y <= close_y + close_size/2);
+            mnv_popup_close_hover = (!adv_embed_mnv) && (mouse_x >= close_x - close_size/2 && mouse_x <= close_x + close_size/2 &&
+                                         mouse_y >= close_y - close_size/2 && mouse_y <= close_y + close_size/2);
             
             // --- Mode Toggle Hit Test ---
-            float mode_btn_y = slider_base_y - 4 * slider_spacing;
-            float mode_btn_w = pw * 0.7f, mode_btn_h = 0.03f;
+            float mode_btn_w = pw * 0.8f, mode_btn_h = 0.032f;
             mnv_popup_mode_hover = (mouse_x >= pop_x - mode_btn_w/2 && mouse_x <= pop_x + mode_btn_w/2 &&
-                                   mouse_y >= mode_btn_y - mode_btn_h/2 && mouse_y <= mode_btn_y + mode_btn_h/2);
+                                    mouse_y >= mode_btn_y - mode_btn_h/2 && mouse_y <= mode_btn_y + mode_btn_h/2);
             
             if (mnv_popup_mode_hover && lmb && !lmb_prev_mnv) {
                 node.burn_mode = 1 - node.burn_mode;
@@ -2258,10 +2273,9 @@ int main() {
             }
 
             // DELETE button hit test
-            float del_btn_y = pop_y - ph/2 + 0.025f;
             float del_btn_w = 0.10f, del_btn_h = 0.03f;
             mnv_popup_del_hover = (mouse_x >= pop_x - del_btn_w/2 && mouse_x <= pop_x + del_btn_w/2 &&
-                              mouse_y >= del_btn_y - del_btn_h/2 && mouse_y <= del_btn_y + del_btn_h/2);
+                                   mouse_y >= del_btn_y - del_btn_h/2 && mouse_y <= del_btn_y + del_btn_h/2);
             
             // --- Slider dragging logic ---
             for (int s = 0; s < 4; s++) {
@@ -3227,7 +3241,7 @@ int main() {
                    
                    mnv_popup_px = menu_x;
                    mnv_popup_pw = menu_w + 0.02f;
-                   mnv_popup_ph = 0.55f;
+                   mnv_popup_ph = 0.40f;
                    mnv_popup_py = adv_menu_bottom - mnv_popup_ph / 2 - 0.005f;
                    mnv_popup_visible = true;
                    mnv_popup_index = 0;
@@ -3257,15 +3271,17 @@ int main() {
         renderer->addRectOutline(pop_x, pop_y, pw, ph, 0.3f, 0.5f, 1.0f, 0.8f);
         
         // Close [X] button (top-right corner)
-        float close_size = 0.028f;
-        float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
-        float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
-        renderer->addRect(close_x, close_y, close_size, close_size, 
-                          mnv_popup_close_hover ? 0.8f : 0.3f, 0.15f, 0.15f, 0.9f);
-        renderer->drawText(close_x, close_y, "X", 0.014f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
+        if (!adv_embed_mnv) {
+            float close_size = 0.028f;
+            float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
+            float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
+            renderer->addRect(close_x, close_y, close_size, close_size, 
+                              mnv_popup_close_hover ? 0.8f : 0.3f, 0.15f, 0.15f, 0.9f);
+            renderer->drawText(close_x, close_y, "X", 0.014f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
+        }
         
         // Title
-        float title_y = pop_y + ph/2 - 0.025f;
+        float title_y = pop_y + ph/2 - (adv_embed_mnv ? 0.015f : 0.025f);
         renderer->drawText(pop_x, title_y, "MANEUVER NODE", 0.013f, 0.5f, 0.8f, 1.0f, 1.0f, true, Renderer::CENTER);
         
         // Reference body
@@ -3283,8 +3299,8 @@ int main() {
         
         float slider_track_w = pw * 0.65f;
         float slider_track_h = 0.012f;
-        float slider_base_y = title_y - 0.06f;
-        float slider_spacing = 0.065f;
+        float slider_base_y = title_y - (adv_embed_mnv ? 0.04f : 0.06f);
+        float slider_spacing = adv_embed_mnv ? 0.050f : 0.065f;
         float slider_cx = pop_x + 0.02f;
         float label_x = pop_x - pw/2 + 0.012f;
         
@@ -3402,7 +3418,7 @@ int main() {
         renderer->drawText(pop_x, mode_y - 0.022f, "(Click to Toggle)", 0.007f, 0.5f, 0.5f, 0.6f, 0.6f, false, Renderer::CENTER);
         
         // --- DELETE button (bottom center) ---
-        float del_btn_y = pop_y - ph/2 + 0.025f;
+        float del_btn_y = pop_y - ph/2 + (adv_embed_mnv ? 0.015f : 0.025f);
         float del_btn_w = 0.10f, del_btn_h = 0.03f;
         renderer->addRect(pop_x, del_btn_y, del_btn_w, del_btn_h, 
                           mnv_popup_del_hover ? 0.9f : 0.5f, mnv_popup_del_hover ? 0.15f : 0.08f, mnv_popup_del_hover ? 0.15f : 0.08f, 0.9f);
