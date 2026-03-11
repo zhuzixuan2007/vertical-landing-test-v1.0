@@ -135,11 +135,17 @@ struct ManeuverNode {
     Vec3 delta_v;             // (Prograde, Normal, Radial) components in meters/sec
     bool active = true;
     bool selected = false;
+    int burn_mode = 0;        // 0 = Impulse, 1 = Sustained
 
     // Fixed orbital elements to prevent jitter during burns
     double ref_a=0, ref_ecc=0, ref_M0=0, ref_n=0;
     Vec3 ref_e_dir, ref_p_dir, ref_center;
     int ref_body=-1;
+    
+    // Snapshot of absolute state at node creation/update for stable post-burn orbit prediction
+    double snap_px=0, snap_py=0, snap_pz=0; // absolute position at node time
+    double snap_vx=0, snap_vy=0, snap_vz=0; // absolute velocity at node time
+    bool snap_valid = false;                 // whether snapshot is populated
 };
 
 // Per-stage physical configuration

@@ -561,6 +561,8 @@ int main() {
     static int mnv_popup_ref_body = -1;          // reference body index
     static int mnv_popup_slider_dragging = -1;   // -1=none, 0=prograde, 1=normal, 2=radial, 3=time
     static float mnv_popup_slider_drag_x = 0;    // mouse x at drag start
+    static int mnv_popup_burn_mode = 0;          // 0=impulse, 1=sustained
+    static bool mnv_popup_mode_hover = false;    // hover for mode button
     static Vec3 adv_mnv_world_pos(0,0,0);        // Exact N-body maneuver visual position
     
     // Advanced Orbit Settings
@@ -1391,6 +1393,28 @@ int main() {
             bool has_mnv = (rocket_state.maneuvers.size() > 0);
             double mnv_t = has_mnv ? rocket_state.maneuvers[0].sim_time : 1e20;
             bool mnv_executed = false;
+            bool burn_in_progress = false;
+            
+            double mnv_duration = 0;
+            if (has_mnv) {
+                double dv_val = rocket_state.maneuvers[0].delta_v.length();
+                double m0 = rocket_state.fuel + rocket_config.dry_mass + rocket_config.upper_stages_mass;
+                double ve = rocket_config.specific_impulse * 9.80665;
+                double mdot = rocket_config.cosrate;
+                if (ve > 0 && mdot > 0 && dv_val > 0) {
+                    mnv_duration = m0 * (1.0 - 1.0/exp(dv_val/ve)) / mdot;
+                }
+            }
+            double trigger_t = mnv_t;
+            if (has_mnv && rocket_state.maneuvers[0].burn_mode == 1) {
+                trigger_t = mnv_t - 0.5 * mnv_duration;
+            }
+
+            // If the burn is already in progress or completed, we need to:
+            if (has_mnv && rocket_state.sim_time >= trigger_t) {
+                burn_in_progress = true;
+                mnv_executed = true; // Don't re-apply delta-v in the primary RK4
+            }
             
             double orig_px = 0, orig_py = 0, orig_pz = 0;
             double orig_vx = 0, orig_vy = 0, orig_vz = 0;
@@ -1434,7 +1458,7 @@ int main() {
                 double step_dt = dt;
                 
                 if (has_mnv && !mnv_executed) {
-                    if (t_sim >= mnv_t) {
+                    if (t_sim >= trigger_t) {
                         // Extract point before applying burn
                         if (!adv_points.empty()) {
                             adv_mnv_world_pos = adv_points.back();
@@ -1487,10 +1511,23 @@ int main() {
                         orig_vx = cur_h_vx; orig_vy = cur_h_vy; orig_vz = cur_h_vz;
                         
                         cur_h_vx += dv.x; cur_h_vy += dv.y; cur_h_vz += dv.z;
+                        
+                        // Snapshot the post-burn state ONLY ONCE for stable orbit prediction.
+                        // Once frozen, it stays stable no matter what the player does.
+                        if (!rocket_state.maneuvers[0].snap_valid) {
+                            rocket_state.maneuvers[0].snap_px = cur_h_px;
+                            rocket_state.maneuvers[0].snap_py = cur_h_py;
+                            rocket_state.maneuvers[0].snap_pz = cur_h_pz;
+                            rocket_state.maneuvers[0].snap_vx = cur_h_vx;
+                            rocket_state.maneuvers[0].snap_vy = cur_h_vy;
+                            rocket_state.maneuvers[0].snap_vz = cur_h_vz;
+                            rocket_state.maneuvers[0].snap_valid = true;
+                        }
+                        
                         mnv_executed = true;
                         continue; // Skip the integration time-step this loop, maneuver is applied instantly in-place!
-                    } else if (t_sim + dt > mnv_t) {
-                        step_dt = mnv_t - t_sim; // Sub-step exactly up to maneuver start time!
+                    } else if (t_sim + dt > trigger_t) {
+                        step_dt = trigger_t - t_sim; // Sub-step exactly up to maneuver start time!
                     }
                 }
                 
@@ -1581,7 +1618,7 @@ int main() {
                     if (mnv_executed) adv_mnv_ground_track.push_back(gt_pt);
                     else adv_ground_track.push_back(gt_pt);
                 }
-                if (mnv_executed) {
+                if (mnv_executed && !burn_in_progress) {
                     adv_mnv_points.push_back(render_pt);
                     
                     // Render shadowed original path
@@ -1604,7 +1641,7 @@ int main() {
                         o_final_px = recon.x; o_final_py = recon.y; o_final_pz = recon.z;
                     }
                     Vec3 o_render_pt((float)(o_final_px * ws_d - ro_x), (float)(o_final_py * ws_d - ro_y), (float)(o_final_pz * ws_d - ro_z));
-                    adv_points.push_back(o_render_pt); // Original path continues to be traced
+                    adv_points.push_back(o_render_pt); // Original path continues
                     
                     double odx = o_final_px - b0_px;
                     double ody = o_final_py - b0_py;
@@ -1619,11 +1656,60 @@ int main() {
                         adv_ground_track.push_back(o_gt_pt);
                     }
                 } else {
+                    // During burn or no maneuver: everything goes to the primary (cyan) trajectory
                     adv_points.push_back(render_pt);
                 }
             }
             // Restore current sim state
             PhysicsSystem::UpdateCelestialBodies(rocket_state.sim_time);
+            
+            // === STABLE PLANNED ORBIT: If burn is in progress and we have a snapshot, ===
+            // === run a SECOND independent RK4 from the snapshot to show the planned orange orbit ===
+            if (burn_in_progress && has_mnv && rocket_state.maneuvers[0].snap_valid) {
+                double s_px = rocket_state.maneuvers[0].snap_px;
+                double s_py = rocket_state.maneuvers[0].snap_py;
+                double s_pz = rocket_state.maneuvers[0].snap_pz;
+                double s_vx = rocket_state.maneuvers[0].snap_vx;
+                double s_vy = rocket_state.maneuvers[0].snap_vy;
+                double s_vz = rocket_state.maneuvers[0].snap_vz;
+                double s_t = trigger_t;
+                
+                for (int i = 0; i < STEPS; i++) {
+                    double k1_vx, k1_vy, k1_vz; calc_acc(s_t, s_px, s_py, s_pz, k1_vx, k1_vy, k1_vz);
+                    double k1_px = s_vx, k1_py = s_vy, k1_pz = s_vz;
+                    double k2_vx, k2_vy, k2_vz; calc_acc(s_t+dt/2, s_px+dt/2*k1_px, s_py+dt/2*k1_py, s_pz+dt/2*k1_pz, k2_vx, k2_vy, k2_vz);
+                    double k2_px = s_vx+dt/2*k1_vx, k2_py = s_vy+dt/2*k1_vy, k2_pz = s_vz+dt/2*k1_vz;
+                    double k3_vx, k3_vy, k3_vz; calc_acc(s_t+dt/2, s_px+dt/2*k2_px, s_py+dt/2*k2_py, s_pz+dt/2*k2_pz, k3_vx, k3_vy, k3_vz);
+                    double k3_px = s_vx+dt/2*k2_vx, k3_py = s_vy+dt/2*k2_vy, k3_pz = s_vz+dt/2*k2_vz;
+                    double k4_vx, k4_vy, k4_vz; calc_acc(s_t+dt, s_px+dt*k3_px, s_py+dt*k3_py, s_pz+dt*k3_pz, k4_vx, k4_vy, k4_vz);
+                    double k4_px = s_vx+dt*k3_vx, k4_py = s_vy+dt*k3_vy, k4_pz = s_vz+dt*k3_vz;
+                    
+                    s_px += dt/6.0*(k1_px + 2*k2_px + 2*k3_px + k4_px);
+                    s_py += dt/6.0*(k1_py + 2*k2_py + 2*k3_py + k4_py);
+                    s_pz += dt/6.0*(k1_pz + 2*k2_pz + 2*k3_pz + k4_pz);
+                    s_vx += dt/6.0*(k1_vx + 2*k2_vx + 2*k3_vx + k4_vx);
+                    s_vy += dt/6.0*(k1_vy + 2*k2_vy + 2*k3_vy + k4_vy);
+                    s_vz += dt/6.0*(k1_vz + 2*k2_vz + 2*k3_vz + k4_vz);
+                    s_t += dt;
+                    
+                    PhysicsSystem::UpdateCelestialBodies(s_t);
+                    double fp = s_px, fpy = s_py, fpz = s_pz;
+                    if (adv_orbit_ref_body != 0) {
+                        if (adv_orbit_ref_mode == 0) { fp = (s_px-SOLAR_SYSTEM[adv_orbit_ref_body].px)+b0_px; fpy = (s_py-SOLAR_SYSTEM[adv_orbit_ref_body].py)+b0_py; fpz = (s_pz-SOLAR_SYSTEM[adv_orbit_ref_body].pz)+b0_pz; }
+                    }
+                    Vec3 rp((float)(fp * ws_d - ro_x), (float)(fpy * ws_d - ro_y), (float)(fpz * ws_d - ro_z));
+                    adv_mnv_points.push_back(rp);
+                    
+                    double mdx = fp - b0_px, mdy = fpy - b0_py, mdz = fpz - b0_pz;
+                    double mdist = sqrt(mdx*mdx + mdy*mdy + mdz*mdz);
+                    if (mdist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                        double sr = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
+                        Vec3 mgp((float)((b0_px + mdx/mdist*sr) * ws_d - ro_x), (float)((b0_py + mdy/mdist*sr) * ws_d - ro_y), (float)((b0_pz + mdz/mdist*sr) * ws_d - ro_z));
+                        adv_mnv_ground_track.push_back(mgp);
+                    }
+                }
+                PhysicsSystem::UpdateCelestialBodies(rocket_state.sim_time);
+            }
 
             // Draw Predicted Path
             float ribbon_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
@@ -2092,33 +2178,51 @@ int main() {
             mnv_popup_dv = node.delta_v;
             mnv_popup_ref_body = node.ref_body;
             
-            // Compute time to node
-            mnv_popup_time_to_node = node.sim_time - rocket_state.sim_time;
-            if (mnv_popup_time_to_node < 0) mnv_popup_time_to_node = 0;
+            // Compute time to node or start of burn
+            double target_t = node.sim_time;
+            if (node.burn_mode == 1) {
+                target_t = node.sim_time - 0.5 * mnv_popup_burn_time;
+            }
+            mnv_popup_time_to_node = target_t - rocket_state.sim_time;
+            if (mnv_popup_time_to_node < -mnv_popup_burn_time) mnv_popup_time_to_node = -mnv_popup_burn_time; // keep showing count-up during burn
             
-            // Compute estimated burn time using Tsiolkovsky equation: t = m0 * (1 - e^(-dv/ve)) / mdot
-            // Simplified: t ≈ dv / (thrust / current_mass)
+            // Compute remaining delta-v: if burn is in progress, compare current velocity
+            // against the planned post-burn velocity from the snapshot
             float total_dv_val = node.delta_v.length();
+            float remaining_dv = total_dv_val; // Default: full delta-v
+            
+            if (node.snap_valid && rocket_state.sim_time >= node.sim_time) {
+                // Burn is in progress! Compute remaining dv from velocity difference
+                double cur_abs_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx;
+                double cur_abs_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy;
+                double cur_abs_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz;
+                // Target velocity is the snapshot velocity (includes delta-v)
+                double rem_vx = node.snap_vx - cur_abs_vx;
+                double rem_vy = node.snap_vy - cur_abs_vy;
+                double rem_vz = node.snap_vz - cur_abs_vz;
+                remaining_dv = (float)sqrt(rem_vx*rem_vx + rem_vy*rem_vy + rem_vz*rem_vz);
+                if (remaining_dv < 0.1f) remaining_dv = 0.0f; // Threshold for completion
+            }
+            
+            // Compute estimated burn time using Tsiolkovsky equation
             double current_mass = rocket_state.fuel + rocket_config.dry_mass + rocket_config.upper_stages_mass;
             double max_thrust = 0;
             if (rocket_state.current_stage < (int)rocket_config.stage_configs.size()) {
                 max_thrust = rocket_config.stage_configs[rocket_state.current_stage].thrust;
             }
             if (max_thrust > 0 && current_mass > 0) {
-                double accel = max_thrust / current_mass;
-                // Use Tsiolkovsky: burn_time = Isp * g0 * ln(m0 / (m0 - mdot*t)) simplified
-                // For small dv, t ≈ dv / accel is accurate enough
                 double ve = rocket_config.specific_impulse * G0;
-                if (ve > 0 && total_dv_val > 0) {
-                    double mass_ratio = exp((double)total_dv_val / ve);
+                if (ve > 0 && remaining_dv > 0) {
+                    double mass_ratio = exp((double)remaining_dv / ve);
                     double fuel_needed = current_mass * (1.0 - 1.0 / mass_ratio);
                     double mdot = rocket_config.cosrate;
-                    mnv_popup_burn_time = (mdot > 0) ? fuel_needed / mdot : (double)total_dv_val / accel;
+                    double accel = max_thrust / current_mass;
+                    mnv_popup_burn_time = (mdot > 0) ? fuel_needed / mdot : (double)remaining_dv / accel;
                 } else {
                     mnv_popup_burn_time = 0;
                 }
             } else {
-                mnv_popup_burn_time = (total_dv_val > 0) ? 9999.0 : 0;
+                mnv_popup_burn_time = (remaining_dv > 0) ? 9999.0 : 0;
             }
             
             // --- Slider layout constants (for hit testing) ---
@@ -2130,6 +2234,9 @@ int main() {
             float slider_spacing = 0.065f;
             float slider_cx = pop_x + 0.02f; // center of slider track
             
+            // State for deferred rendering
+            mnv_popup_burn_mode = node.burn_mode;
+
             // Close [X] button hit test
             float close_size = 0.028f;
             float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
@@ -2137,6 +2244,18 @@ int main() {
             mnv_popup_close_hover = (mouse_x >= close_x - close_size/2 && mouse_x <= close_x + close_size/2 &&
                                 mouse_y >= close_y - close_size/2 && mouse_y <= close_y + close_size/2);
             
+            // --- Mode Toggle Hit Test ---
+            float mode_btn_y = slider_base_y - 4 * slider_spacing;
+            float mode_btn_w = pw * 0.7f, mode_btn_h = 0.03f;
+            mnv_popup_mode_hover = (mouse_x >= pop_x - mode_btn_w/2 && mouse_x <= pop_x + mode_btn_w/2 &&
+                                   mouse_y >= mode_btn_y - mode_btn_h/2 && mouse_y <= mode_btn_y + mode_btn_h/2);
+            
+            if (mnv_popup_mode_hover && lmb && !lmb_prev_mnv) {
+                node.burn_mode = 1 - node.burn_mode;
+                node.snap_valid = false; // Force re-prediction
+                popup_clicked_frame = true;
+            }
+
             // DELETE button hit test
             float del_btn_y = pop_y - ph/2 + 0.025f;
             float del_btn_w = 0.10f, del_btn_h = 0.03f;
@@ -2144,8 +2263,6 @@ int main() {
                               mouse_y >= del_btn_y - del_btn_h/2 && mouse_y <= del_btn_y + del_btn_h/2);
             
             // --- Slider dragging logic ---
-            // Each slider: drag left = decrease, drag right = increase
-            // Sensitivity increases exponentially with drag distance from center
             for (int s = 0; s < 4; s++) {
                 float sy = slider_base_y - s * slider_spacing;
                 bool on_track = (mouse_x >= slider_cx - slider_track_w/2 - 0.02f && mouse_x <= slider_cx + slider_track_w/2 + 0.02f &&
@@ -2159,7 +2276,6 @@ int main() {
             
             if (mnv_popup_slider_dragging >= 0 && lmb) {
                 float drag_offset = mouse_x - mnv_popup_slider_drag_x;
-                // Exponential sensitivity: small drags = fine control, large drags = fast
                 float sign = (drag_offset >= 0) ? 1.0f : -1.0f;
                 float abs_offset = fabsf(drag_offset);
                 
@@ -2168,15 +2284,18 @@ int main() {
                     if (mnv_popup_slider_dragging == 0) node.delta_v.x += rate;
                     else if (mnv_popup_slider_dragging == 1) node.delta_v.y += rate;
                     else if (mnv_popup_slider_dragging == 2) node.delta_v.z += rate;
+                    node.snap_valid = false;
                 } else if (mnv_popup_slider_dragging == 3) {
                     float t_rate = sign * abs_offset * abs_offset * 1000000.0f * (float)dt;
                     node.sim_time += t_rate;
                     if (node.sim_time < rocket_state.sim_time + 10.0) node.sim_time = rocket_state.sim_time + 10.0;
+                    node.snap_valid = false;
                 }
                 
                 node.active = true;
-                mnv_popup_dv = node.delta_v; // Update cached value
+                mnv_popup_dv = node.delta_v;
             }
+            
             if (!lmb) {
                 mnv_popup_slider_dragging = -1;
             }
@@ -3053,22 +3172,32 @@ int main() {
             
             // Process warp-to-node: set time_warp to max safe level until near the node
             if (adv_warp_to_node && has_mnv_btn) {
-                double time_to_mnv = rocket_state.maneuvers[0].sim_time - rocket_state.sim_time;
-                if (time_to_mnv <= 60.0) {
-                    // Arrived! Stop warping
+                double target_t = rocket_state.maneuvers[0].sim_time;
+                if (rocket_state.maneuvers[0].burn_mode == 1) {
+                    // In sustained mode, calculate duration to find start time
+                    double dv_val = rocket_state.maneuvers[0].delta_v.length();
+                    double m0 = rocket_state.fuel + rocket_config.dry_mass + rocket_config.upper_stages_mass;
+                    double ve = rocket_config.specific_impulse * 9.80665;
+                    double duration = 0;
+                    if (ve > 0 && rocket_config.cosrate > 0 && dv_val > 0) duration = m0 * (1.0 - 1.0/exp(dv_val/ve)) / rocket_config.cosrate;
+                    target_t -= 0.5 * duration;
+                }
+                double time_to_start = target_t - rocket_state.sim_time;
+                if (time_to_start <= 60.0) {
+                    // Arrived at start window! Stop warping
                     time_warp = 1;
                     adv_warp_to_node = false;
-                } else if (time_to_mnv > 86400.0 * 10) {
+                } else if (time_to_start > 86400.0 * 10) {
                     time_warp = 10000000; // 10M
-                } else if (time_to_mnv > 86400.0) {
+                } else if (time_to_start > 86400.0) {
                     time_warp = 1000000; // 1M
-                } else if (time_to_mnv > 3600.0 * 4) {
+                } else if (time_to_start > 3600.0 * 4) {
                     time_warp = 100000; // 100K
-                } else if (time_to_mnv > 3600.0) {
+                } else if (time_to_start > 3600.0) {
                     time_warp = 10000; // 10K
-                } else if (time_to_mnv > 600.0) {
+                } else if (time_to_start > 600.0) {
                     time_warp = 1000;
-                } else if (time_to_mnv > 120.0) {
+                } else if (time_to_start > 120.0) {
                     time_warp = 100;
                 } else {
                     time_warp = 10;
@@ -3205,12 +3334,15 @@ int main() {
         if (mnv_popup_time_to_node > 3600) {
             int t_hr = (int)(mnv_popup_time_to_node / 3600.0);
             t_min = (int)fmod(mnv_popup_time_to_node / 60.0, 60.0);
-            snprintf(buf, sizeof(buf), "T- %dH %02dM %02dS", t_hr, t_min, t_sec);
+            snprintf(buf, sizeof(buf), "%s: %dH %02dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_hr, t_min, t_sec);
+        } else if (mnv_popup_time_to_node >= 0) {
+            snprintf(buf, sizeof(buf), "%s: %dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_min, t_sec);
         } else {
-            snprintf(buf, sizeof(buf), "T- %dM %02dS", t_min, t_sec);
+            // Counting up or burn in progress
+            snprintf(buf, sizeof(buf), "BURN+ %dS", (int)(-mnv_popup_time_to_node));
         }
         // Color: green if far, yellow if close, red if very close
-        float time_ratio = (float)fmin(1.0, mnv_popup_time_to_node / 120.0);
+        float time_ratio = (float)fmin(1.0, fmax(0.0, mnv_popup_time_to_node / 120.0));
         renderer->drawText(info_lx, info_y, buf, 0.010f, 
                           1.0f - time_ratio * 0.7f, 0.3f + time_ratio * 0.7f, 0.2f, 1.0f, true, Renderer::LEFT);
         
@@ -3226,6 +3358,17 @@ int main() {
             snprintf(buf, sizeof(buf), "BURN: %.1fS", mnv_popup_burn_time);
         }
         renderer->drawText(info_lx, info_y, buf, 0.010f, 0.9f, 0.7f, 0.3f, 1.0f, true, Renderer::LEFT);
+        
+        // --- Burn Mode Toggle ---
+        float mode_y = info_y - 0.045f;
+        float mbw = pw * 0.8f, mbh = 0.032f;
+        renderer->addRectOutline(pop_x, mode_y, mbw, mbh, 0.4f, 0.6f, 1.0f, 0.8f);
+        if (mnv_popup_mode_hover) {
+            renderer->addRect(pop_x, mode_y, mbw, mbh, 0.2f, 0.3f, 0.5f, 0.4f);
+        }
+        const char* mode_names[] = {"INSTANT IMPULSE", "SUSTAINED BURN"};
+        renderer->drawText(pop_x, mode_y, mode_names[mnv_popup_burn_mode], 0.009f, 0.7f, 0.9f, 1.0f, 1.0f, true, Renderer::CENTER);
+        renderer->drawText(pop_x, mode_y - 0.022f, "(Click to Toggle)", 0.007f, 0.5f, 0.5f, 0.6f, 0.6f, false, Renderer::CENTER);
         
         // --- DELETE button (bottom center) ---
         float del_btn_y = pop_y - ph/2 + 0.025f;
