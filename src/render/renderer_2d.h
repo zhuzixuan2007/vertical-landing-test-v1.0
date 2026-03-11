@@ -117,6 +117,14 @@ public:
     addVertex(x - w / 2, y - h / 2, r, g, b, a);
   }
 
+  // 矩形边框
+  void addRectOutline(float x, float y, float w, float h, float r, float g, float b, float a = 1.0f, float thick = 0.002f) {
+      addLine(x - w / 2, y - h / 2, x + w / 2, y - h / 2, thick, r, g, b, a);
+      addLine(x + w / 2, y - h / 2, x + w / 2, y + h / 2, thick, r, g, b, a);
+      addLine(x + w / 2, y + h / 2, x - w / 2, y + h / 2, thick, r, g, b, a);
+      addLine(x - w / 2, y + h / 2, x - w / 2, y - h / 2, thick, r, g, b, a);
+  }
+
   // 旋转矩形
   void addRotatedRect(float cx, float cy, float w, float h, float angle,
                       float r, float g, float b, float a = 1.0f) {

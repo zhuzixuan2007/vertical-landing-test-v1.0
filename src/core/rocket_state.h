@@ -135,6 +135,11 @@ struct ManeuverNode {
     Vec3 delta_v;             // (Prograde, Normal, Radial) components in meters/sec
     bool active = true;
     bool selected = false;
+
+    // Fixed orbital elements to prevent jitter during burns
+    double ref_a=0, ref_ecc=0, ref_M0=0, ref_n=0;
+    Vec3 ref_e_dir, ref_p_dir, ref_center;
+    int ref_body=-1;
 };
 
 // Per-stage physical configuration
