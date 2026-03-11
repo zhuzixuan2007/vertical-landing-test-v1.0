@@ -561,6 +561,14 @@ int main() {
     static int mnv_popup_ref_body = -1;          // reference body index
     static int mnv_popup_slider_dragging = -1;   // -1=none, 0=prograde, 1=normal, 2=radial
     static float mnv_popup_slider_drag_x = 0;    // mouse x at drag start
+    
+    // Advanced Orbit Settings
+    static bool adv_orbit_enabled = false;
+    static bool adv_orbit_menu = false;
+    static int adv_orbit_step = 600;      // step size in seconds
+    static int adv_orbit_length = 3000;   // number of steps (3000 * 600 = ~20 days)
+    static int adv_orbit_ref_mode = 0;    // 0 = Inertial, 1 = Co-rotating
+    static int adv_orbit_ref_body = 3;    // Earth default
 
     static bool space_was_pressed = true; // Start true to ignore the Builder's enter/space
     bool space_now = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -1356,9 +1364,236 @@ int main() {
 
       // ===== 轨道预测线 (开普勒轨道) =====
       if (cam_mode_3d == 2) {
-        // We calculate and draw BOTH Earth-relative AND Sun-relative orbits concurrently!
-        for (int ref_idx = 0; ref_idx < 2; ref_idx++) {
-          bool is_sun_ref = (ref_idx == 1);
+        if (adv_orbit_enabled) {
+            // ==========================================
+            // ADVANCED ORBIT PREDICTION: N-BODY RK4
+            // ==========================================
+            std::vector<Vec3> adv_points;
+            std::vector<Vec3> adv_mnv_points; // For prediction after maneuver
+
+            int STEPS = adv_orbit_length;
+            double dt = adv_orbit_step;
+            
+            // Get initial absolute state
+            double cur_h_px = rocket_state.px + SOLAR_SYSTEM[current_soi_index].px;
+            double cur_h_py = rocket_state.py + SOLAR_SYSTEM[current_soi_index].py;
+            double cur_h_pz = rocket_state.pz + SOLAR_SYSTEM[current_soi_index].pz;
+            double cur_h_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx;
+            double cur_h_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy;
+            double cur_h_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz;
+
+            double t_sim = rocket_state.sim_time;
+            
+            bool has_mnv = (rocket_state.maneuvers.size() > 0);
+            double mnv_t = has_mnv ? rocket_state.maneuvers[0].sim_time : 1e20;
+            bool mnv_executed = false;
+            
+            // Pre-calculate current basis for rendering mapping
+            double b0_px = SOLAR_SYSTEM[adv_orbit_ref_body].px;
+            double b0_py = SOLAR_SYSTEM[adv_orbit_ref_body].py;
+            double b0_pz = SOLAR_SYSTEM[adv_orbit_ref_body].pz;
+            double b0_vx = SOLAR_SYSTEM[adv_orbit_ref_body].vx;
+            double b0_vy = SOLAR_SYSTEM[adv_orbit_ref_body].vy;
+            double b0_vz = SOLAR_SYSTEM[adv_orbit_ref_body].vz;
+            
+            Vec3 ux0, uy0, uz0;
+            if (adv_orbit_ref_mode == 1 && adv_orbit_ref_body != 0) {
+                Vec3 R(b0_px, b0_py, b0_pz);
+                Vec3 V(b0_vx, b0_vy, b0_vz);
+                ux0 = R.normalized();
+                uz0 = R.cross(V).normalized();
+                uy0 = uz0.cross(ux0).normalized();
+            }
+
+            auto calc_acc = [&](double tx, double px, double py, double pz, double& ax, double& ay, double& az) {
+                PhysicsSystem::UpdateCelestialBodies(tx);
+                ax = 0; ay = 0; az = 0;
+                for (size_t b = 0; b < SOLAR_SYSTEM.size(); b++) {
+                    double dx = SOLAR_SYSTEM[b].px - px;
+                    double dy = SOLAR_SYSTEM[b].py - py;
+                    double dz = SOLAR_SYSTEM[b].pz - pz;
+                    double dist_sq = dx*dx + dy*dy + dz*dz;
+                    if (dist_sq > 0) {
+                        double dist = sqrt(dist_sq);
+                        double F = (6.67430e-11 * SOLAR_SYSTEM[b].mass) / dist_sq;
+                        ax += F * dx / dist;
+                        ay += F * dy / dist;
+                        az += F * dz / dist;
+                    }
+                }
+            };
+
+            // Hit-testing state for RK4
+            float best_orb_dist = 1.0f;
+            double hit_t = -1.0;
+            double hit_px = 0, hit_py = 0, hit_pz = 0;
+            double hit_vx = 0, hit_vy = 0, hit_vz = 0;
+
+            double mx_curr, my_curr; 
+            glfwGetCursorPos(window, &mx_curr, &my_curr);
+            float mxf = (float)(mx_curr / ww * 2.0 - 1.0);
+            float myf = (float)(1.0 - my_curr / wh * 2.0);
+
+            for (int i = 0; i < STEPS; i++) {
+                if (has_mnv && !mnv_executed && t_sim >= mnv_t) {
+                    PhysicsSystem::UpdateCelestialBodies(t_sim);
+                    double r_rel_x = cur_h_px - SOLAR_SYSTEM[current_soi_index].px;
+                    double r_rel_y = cur_h_py - SOLAR_SYSTEM[current_soi_index].py;
+                    double r_rel_z = cur_h_pz - SOLAR_SYSTEM[current_soi_index].pz;
+                    double v_rel_x = cur_h_vx - SOLAR_SYSTEM[current_soi_index].vx;
+                    double v_rel_y = cur_h_vy - SOLAR_SYSTEM[current_soi_index].vy;
+                    double v_rel_z = cur_h_vz - SOLAR_SYSTEM[current_soi_index].vz;
+                    
+                    ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)r_rel_x,(float)r_rel_y,(float)r_rel_z), Vec3((float)v_rel_x,(float)v_rel_y,(float)v_rel_z));
+                    Vec3 dv = frame.prograde * rocket_state.maneuvers[0].delta_v.x + 
+                              frame.normal   * rocket_state.maneuvers[0].delta_v.y + 
+                              frame.radial   * rocket_state.maneuvers[0].delta_v.z;
+                    cur_h_vx += dv.x; cur_h_vy += dv.y; cur_h_vz += dv.z;
+                    mnv_executed = true;
+                }
+                
+                // RK4 evaluate
+                double k1_vx, k1_vy, k1_vz; calc_acc(t_sim, cur_h_px, cur_h_py, cur_h_pz, k1_vx, k1_vy, k1_vz);
+                double k1_px = cur_h_vx, k1_py = cur_h_vy, k1_pz = cur_h_vz;
+                
+                double k2_vx, k2_vy, k2_vz; calc_acc(t_sim+dt/2, cur_h_px+dt/2*k1_px, cur_h_py+dt/2*k1_py, cur_h_pz+dt/2*k1_pz, k2_vx, k2_vy, k2_vz);
+                double k2_px = cur_h_vx+dt/2*k1_vx, k2_py = cur_h_vy+dt/2*k1_vy, k2_pz = cur_h_vz+dt/2*k1_vz;
+                
+                double k3_vx, k3_vy, k3_vz; calc_acc(t_sim+dt/2, cur_h_px+dt/2*k2_px, cur_h_py+dt/2*k2_py, cur_h_pz+dt/2*k2_pz, k3_vx, k3_vy, k3_vz);
+                double k3_px = cur_h_vx+dt/2*k2_vx, k3_py = cur_h_vy+dt/2*k2_vy, k3_pz = cur_h_vz+dt/2*k2_vz;
+                
+                double k4_vx, k4_vy, k4_vz; calc_acc(t_sim+dt, cur_h_px+dt*k3_px, cur_h_py+dt*k3_py, cur_h_pz+dt*k3_pz, k4_vx, k4_vy, k4_vz);
+                double k4_px = cur_h_vx+dt*k3_vx, k4_py = cur_h_vy+dt*k3_vy, k4_pz = cur_h_vz+dt*k3_vz;
+                
+                cur_h_px += dt/6.0*(k1_px + 2*k2_px + 2*k3_px + k4_px);
+                cur_h_py += dt/6.0*(k1_py + 2*k2_py + 2*k3_py + k4_py);
+                cur_h_pz += dt/6.0*(k1_pz + 2*k2_pz + 2*k3_pz + k4_pz);
+                cur_h_vx += dt/6.0*(k1_vx + 2*k2_vx + 2*k3_vx + k4_vx);
+                cur_h_vy += dt/6.0*(k1_vy + 2*k2_vy + 2*k3_vy + k4_vy);
+                cur_h_vz += dt/6.0*(k1_vz + 2*k2_vz + 2*k3_vz + k4_vz);
+                t_sim += dt;
+
+                // Sync planets to new t_sim to extract rendering reference
+                PhysicsSystem::UpdateCelestialBodies(t_sim);
+                
+                double final_px = cur_h_px, final_py = cur_h_py, final_pz = cur_h_pz;
+
+                if (adv_orbit_ref_body != 0) {
+                    if (adv_orbit_ref_mode == 0) { // Inertial Translation
+                        final_px = (cur_h_px - SOLAR_SYSTEM[adv_orbit_ref_body].px) + b0_px;
+                        final_py = (cur_h_py - SOLAR_SYSTEM[adv_orbit_ref_body].py) + b0_py;
+                        final_pz = (cur_h_pz - SOLAR_SYSTEM[adv_orbit_ref_body].pz) + b0_pz;
+                    } else if (adv_orbit_ref_mode == 1) { // Co-rotating
+                        Vec3 R(SOLAR_SYSTEM[adv_orbit_ref_body].px, SOLAR_SYSTEM[adv_orbit_ref_body].py, SOLAR_SYSTEM[adv_orbit_ref_body].pz);
+                        Vec3 V(SOLAR_SYSTEM[adv_orbit_ref_body].vx, SOLAR_SYSTEM[adv_orbit_ref_body].vy, SOLAR_SYSTEM[adv_orbit_ref_body].vz);
+                        Vec3 uxt = R.normalized();
+                        Vec3 uzt = R.cross(V).normalized();
+                        Vec3 uyt = uzt.cross(uxt).normalized();
+                        
+                        // Pos relative to Sun
+                        Vec3 p_sc((float)cur_h_px, (float)cur_h_py, (float)cur_h_pz); 
+                        float xc = p_sc.dot(uxt);
+                        float yc = p_sc.dot(uyt);
+                        float zc = p_sc.dot(uzt);
+
+                        // Reconstruct in t0 basis
+                        Vec3 recon = ux0 * xc + uy0 * yc + uz0 * zc;
+                        final_px = recon.x; final_py = recon.y; final_pz = recon.z;
+                    }
+                }
+                
+                Vec3 render_pt((float)(final_px * ws_d - ro_x), (float)(final_py * ws_d - ro_y), (float)(final_pz * ws_d - ro_z));
+                // RK4 hit testing for Maneuver generation
+                if (!has_mnv) {
+                    Vec2 scr = ManeuverSystem::projectToScreen(render_pt, viewMat, macroProjMat, (float)ww/wh);
+                    float d = sqrtf(powf(scr.x - mxf, 2) + powf(scr.y - myf, 2));
+                    if (d < best_orb_dist) {
+                        best_orb_dist = d;
+                        hit_t = t_sim;
+                        hit_px = cur_h_px; hit_py = cur_h_py; hit_pz = cur_h_pz;
+                        hit_vx = cur_h_vx; hit_vy = cur_h_vy; hit_vz = cur_h_vz;
+                    }
+                }
+                
+                // Discard rendering artifacts from crossing rendering origin by keeping points sane
+                if (mnv_executed) adv_mnv_points.push_back(render_pt);
+                else adv_points.push_back(render_pt);
+            }
+            // Restore current sim state
+            PhysicsSystem::UpdateCelestialBodies(rocket_state.sim_time);
+
+            // If we hovered an RK4 point, calculate its osculating Keplerian parameters for the maneuver node system
+            if (!has_mnv && hit_t >= 0 && best_orb_dist < 0.05f) {
+                // Use Earth as generic reference body for osculating orbit
+                int ref_soi = current_soi_index;
+                double mu = 6.67430e-11 * SOLAR_SYSTEM[ref_soi].mass;
+                double r_rel_x = hit_px - SOLAR_SYSTEM[ref_soi].px;
+                double r_rel_y = hit_py - SOLAR_SYSTEM[ref_soi].py;
+                double r_rel_z = hit_pz - SOLAR_SYSTEM[ref_soi].pz;
+                double v_rel_x = hit_vx - SOLAR_SYSTEM[ref_soi].vx;
+                double v_rel_y = hit_vy - SOLAR_SYSTEM[ref_soi].vy;
+                double v_rel_z = hit_vz - SOLAR_SYSTEM[ref_soi].vz;
+                
+                Vec3 r_vec((float)r_rel_x, (float)r_rel_y, (float)r_rel_z);
+                Vec3 v_vec((float)v_rel_x, (float)v_rel_y, (float)v_rel_z);
+                double r_mag = r_vec.length();
+                double v_sq = v_vec.lengthSq();
+                Vec3 h_vec = r_vec.cross(v_vec);
+                double energy = 0.5 * v_sq - mu / r_mag;
+                double a = -mu / (2.0 * energy);
+                Vec3 e_vec = v_vec.cross(h_vec) / (float)mu - r_vec / (float)r_mag;
+                double ecc = e_vec.length();
+                Vec3 e_dir = (ecc > 1e-7f) ? e_vec.normalized() : Vec3(1,0,0);
+                Vec3 p_dir = h_vec.normalized().cross(e_dir).normalized();
+                
+                double s_cosE = (a - r_mag) / (a * ecc);
+                double s_sinE = r_vec.dot(p_dir) / (a * sqrt(fmax(0.0, 1.0 - ecc*ecc)));
+                double E0 = atan2(s_sinE, s_cosE);
+                double M0 = E0 - ecc * sin(E0);
+                
+                global_best_ang = (float)E0; // Hack: store E0 or True anomaly, Maneuver system actually expects True anomaly or uses it to recreate
+                global_best_mu = mu;
+                global_best_a = a;
+                global_best_ecc = ecc;
+                global_best_center = e_dir * (-(float)a * (float)ecc);
+                global_best_e_dir = e_dir;
+                global_best_perp_dir = p_dir;
+                global_best_ref_node = ref_soi;
+                
+                // M0 is needed
+                global_current_M0 = M0;
+                global_current_n = sqrt(mu / (a * a * a));
+                
+                // Set the exact time by modifying M0 so it acts like it's reached at hit_t
+                double dt_to_hit = hit_t - rocket_state.sim_time;
+                global_current_M0 -= global_current_n * dt_to_hit; 
+                
+                global_best_pt = Vec3((float)(hit_px * ws_d - ro_x), (float)(hit_py * ws_d - ro_y), (float)(hit_pz * ws_d - ro_z));
+            }
+
+            // Draw Predicted Path
+            float ribbon_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+            if (adv_points.size() > 1) {
+                r3d->drawRibbon(adv_points, ribbon_w, 0.4f, 1.0f, 0.6f, 0.8f);
+            }
+            if (adv_mnv_points.size() > 1) {
+                // Dashed line logic for maneuver prediction
+                for (size_t s = 0; s < adv_mnv_points.size(); s += 5) {
+                    std::vector<Vec3> dash;
+                    for (size_t j = 0; j < 3; j++) {
+                        if (s + j < adv_mnv_points.size()) dash.push_back(adv_mnv_points[s + j]);
+                    }
+                    if (dash.size() >= 2) r3d->drawRibbon(dash, ribbon_w, 1.0f, 1.0f, 1.0f, 0.7f);
+                }
+            }
+
+        } else {
+            // ==========================================
+            // STANDARD ORBIT PREDICTION: KEPLERIAN (SOI)
+            // ==========================================
+            // We calculate and draw BOTH Earth-relative AND Sun-relative orbits concurrently!
+            for (int ref_idx = 0; ref_idx < 2; ref_idx++) {
+              bool is_sun_ref = (ref_idx == 1);
 
           // 选择参考系
           double G_const = 6.67430e-11;
@@ -1560,6 +1795,7 @@ int main() {
             }
           }
         }
+        } // close if (adv_orbit_enabled) else block
 
         // --- Maneuver Nodes & Predicted Orbits ---
         double mx_raw, my_raw; glfwGetCursorPos(window, &mx_raw, &my_raw);
@@ -2590,6 +2826,81 @@ int main() {
         renderer->addRect(bx, by, btn_w, btn_h, sas_btns[i].r, sas_btns[i].g, sas_btns[i].b, alpha);
         renderer->drawText(bx, by, sas_btns[i].label, 0.012f, 1, 1, 1, 0.9f, true, Renderer::CENTER);
     }
+    
+    // --- 9. Advanced Orbit UI (Right Edge) ---
+    if (cam_mode_3d == 2 && !SOLAR_SYSTEM.empty()) {
+        float adv_btn_w = 0.15f;
+        float adv_btn_h = 0.05f;
+        float adv_btn_x = 0.88f;
+        float adv_btn_y = mode_y - 0.35f; // below stage UI
+        
+        bool hover_adv = (hmouse_x >= adv_btn_x - adv_btn_w/2 && hmouse_x <= adv_btn_x + adv_btn_w/2 && hmouse_y >= adv_btn_y - adv_btn_h/2 && hmouse_y <= adv_btn_y + adv_btn_h/2);
+        if (hover_adv && hlmb && !hlmb_prev) adv_orbit_menu = !adv_orbit_menu;
+        
+        renderer->addRect(adv_btn_x, adv_btn_y, adv_btn_w, adv_btn_h, 0.2f, 0.4f, 0.8f, hover_adv ? 0.9f : 0.7f);
+        renderer->drawText(adv_btn_x, adv_btn_y, "ADV ORBIT", 0.012f, 1, 1, 1, 1.0f, true, Renderer::CENTER);
+
+        if (adv_orbit_menu) {
+            float menu_w = 0.30f;
+            float menu_h = 0.35f;
+            float menu_x = adv_btn_x - adv_btn_w/2 - menu_w/2 - 0.02f;
+            float menu_y = adv_btn_y;
+            renderer->addRect(menu_x, menu_y, menu_w, menu_h, 0.05f, 0.05f, 0.1f, 0.85f);
+            renderer->addRectOutline(menu_x, menu_y, menu_w, menu_h, 0.4f, 0.6f, 1.0f, 0.8f);
+            
+            float tog_y = menu_y + menu_h/2 - 0.05f;
+            bool hover_tog = (hmouse_x >= menu_x - menu_w/2 && hmouse_x <= menu_x + menu_w/2 && hmouse_y >= tog_y - 0.02f && hmouse_y <= tog_y + 0.02f);
+            if (hover_tog && hlmb && !hlmb_prev) adv_orbit_enabled = !adv_orbit_enabled;
+            renderer->drawText(menu_x - 0.12f, tog_y, "Mode:", 0.012f, 1, 1, 1, 1.0f);
+            renderer->drawText(menu_x + 0.02f, tog_y, adv_orbit_enabled ? "N-BODY (RK4)" : "KEPLER (SOI)", 0.012f, adv_orbit_enabled?1:0.6f, adv_orbit_enabled?0.5f:1, 0.4f, 1.0f);
+
+            // Frame Type Switch (Inertial vs Co-rotating)
+            float fr_y = tog_y - 0.06f;
+            renderer->drawText(menu_x - 0.12f, fr_y, "Frame:", 0.012f, 1, 1, 1, 1.0f);
+            bool hover_fr_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= fr_y - 0.02f && hmouse_y <= fr_y + 0.02f);
+            bool hover_fr_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= fr_y - 0.02f && hmouse_y <= fr_y + 0.02f);
+            if (hover_fr_l && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+1)%2;
+            if (hover_fr_r && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+1)%2;
+            renderer->drawText(menu_x + 0.01f, fr_y, "<", 0.012f, 1,1,1, hover_fr_l?1.0f:0.5f, true, Renderer::CENTER);
+            renderer->drawText(menu_x + 0.07f, fr_y, adv_orbit_ref_mode==0 ? "INERTIAL" : "CO-ROT", 0.010f, 1,1,1,1, true, Renderer::CENTER);
+            renderer->drawText(menu_x + 0.13f, fr_y, ">", 0.012f, 1,1,1, hover_fr_r?1.0f:0.5f, true, Renderer::CENTER);
+
+            // Ref Body Switch
+            float bd_y = fr_y - 0.06f;
+            renderer->drawText(menu_x - 0.12f, bd_y, "Ref Body:", 0.012f, 1, 1, 1, 1.0f);
+            bool hover_bd_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= bd_y - 0.02f && hmouse_y <= bd_y + 0.02f);
+            bool hover_bd_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= bd_y - 0.02f && hmouse_y <= bd_y + 0.02f);
+            if (hover_bd_l && hlmb && !hlmb_prev) adv_orbit_ref_body = (adv_orbit_ref_body-1 < 0) ? (int)SOLAR_SYSTEM.size()-1 : adv_orbit_ref_body-1;
+            if (hover_bd_r && hlmb && !hlmb_prev) adv_orbit_ref_body = (adv_orbit_ref_body+1) % (int)SOLAR_SYSTEM.size();
+            renderer->drawText(menu_x + 0.01f, bd_y, "<", 0.012f, 1,1,1, hover_bd_l?1.0f:0.5f, true, Renderer::CENTER);
+            if (!SOLAR_SYSTEM.empty()) {
+                renderer->drawText(menu_x + 0.07f, bd_y, SOLAR_SYSTEM[adv_orbit_ref_body].name.c_str(), 0.010f, 1,1,1,1, true, Renderer::CENTER);
+            }
+            renderer->drawText(menu_x + 0.13f, bd_y, ">", 0.012f, 1,1,1, hover_bd_r?1.0f:0.5f, true, Renderer::CENTER);
+
+            // Step Size Switch
+            float step_y = bd_y - 0.06f;
+            renderer->drawText(menu_x - 0.12f, step_y, "Step (s):", 0.012f, 1, 1, 1, 1.0f);
+            bool hover_st_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= step_y - 0.02f && hmouse_y <= step_y + 0.02f);
+            bool hover_st_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= step_y - 0.02f && hmouse_y <= step_y + 0.02f);
+            int step_opts[] = {60, 300, 600, 1800, 3600};
+            int cur_st_idx = 0;
+            for (int j=0; j<5; j++) if(adv_orbit_step == step_opts[j]) cur_st_idx = j;
+            if (hover_st_l && hlmb && !hlmb_prev && cur_st_idx > 0) adv_orbit_step = step_opts[cur_st_idx-1];
+            if (hover_st_r && hlmb && !hlmb_prev && cur_st_idx < 4) adv_orbit_step = step_opts[cur_st_idx+1];
+            renderer->drawText(menu_x + 0.01f, step_y, "<", 0.012f, 1,1,1, hover_st_l?1.0f:0.5f, true, Renderer::CENTER);
+            char st_str[32]; snprintf(st_str, sizeof(st_str), "%d", adv_orbit_step);
+            renderer->drawText(menu_x + 0.07f, step_y, st_str, 0.010f, 1,1,1,1, true, Renderer::CENTER);
+            renderer->drawText(menu_x + 0.13f, step_y, ">", 0.012f, 1,1,1, hover_st_r?1.0f:0.5f, true, Renderer::CENTER);
+            
+            // Expected Duration Info
+            float len_y = step_y - 0.06f;
+            renderer->drawText(menu_x - 0.12f, len_y, "Sim Length:", 0.012f, 1,1,1, 1.0f);
+            char len_str[64]; snprintf(len_str, sizeof(len_str), "%.1f Days", (adv_orbit_step * adv_orbit_length) / 86400.0f);
+            renderer->drawText(menu_x + 0.07f, len_y, len_str, 0.010f, 0.8f, 0.8f, 0.8f, 1.0f, true, Renderer::CENTER);
+        }
+    }
+    
     hlmb_prev = hlmb;
 
     // ========================================================================
