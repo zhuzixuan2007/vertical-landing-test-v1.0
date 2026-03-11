@@ -575,6 +575,8 @@ int main() {
     static int adv_orbit_ref_body = 3;    // Earth default
     static bool adv_warp_to_node = false; // warp-to-maneuver in progress
     static bool adv_embed_mnv = false;    // maneuver popup embedded in adv menu
+    static bool adv_embed_mnv_mini = false; // deeply folded (mini) state
+    static bool mnv_popup_mini_hover = false;
 
     static bool space_was_pressed = true; // Start true to ignore the Builder's enter/space
     bool space_now = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -1602,23 +1604,43 @@ int main() {
                         // Reconstruct in t0 basis
                         Vec3 recon = ux0 * xc + uy0 * yc + uz0 * zc;
                         final_px = recon.x; final_py = recon.y; final_pz = recon.z;
+                    } else if (adv_orbit_ref_mode == 2) { // Surface
+                        double dx = cur_h_px - SOLAR_SYSTEM[adv_orbit_ref_body].px;
+                        double dy = cur_h_py - SOLAR_SYSTEM[adv_orbit_ref_body].py;
+                        double dz = cur_h_pz - SOLAR_SYSTEM[adv_orbit_ref_body].pz;
+                        
+                        double rot_period = SOLAR_SYSTEM[adv_orbit_ref_body].rotation_period;
+                        double delta_theta = (t_sim - rocket_state.sim_time) * (2.0 * PI / rot_period);
+                        
+                        double c = cos(delta_theta);
+                        double s = sin(delta_theta);
+                        
+                        double recon_x = dx * c + dy * s;
+                        double recon_y = -dx * s + dy * c;
+                        double recon_z = dz;
+                        
+                        final_px = recon_x + b0_px;
+                        final_py = recon_y + b0_py;
+                        final_pz = recon_z + b0_pz;
                     }
                 }
                 
                 Vec3 render_pt((float)(final_px * ws_d - ro_x), (float)(final_py * ws_d - ro_y), (float)(final_pz * ws_d - ro_z));
                 // Ground track point calculation
-                double dx = final_px - b0_px;
-                double dy = final_py - b0_py;
-                double dz = final_pz - b0_pz;
-                double dist = sqrt(dx*dx + dy*dy + dz*dz);
-                if (dist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
-                    double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002; // slightly above surface
-                    double gx = b0_px + dx/dist * surf_r;
-                    double gy = b0_py + dy/dist * surf_r;
-                    double gz = b0_pz + dz/dist * surf_r;
-                    Vec3 gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
-                    if (mnv_executed) adv_mnv_ground_track.push_back(gt_pt);
-                    else adv_ground_track.push_back(gt_pt);
+                if (adv_orbit_ref_mode == 1) { // Ground track only makes sense in Co-rotating frame
+                    double dx = final_px - b0_px;
+                    double dy = final_py - b0_py;
+                    double dz = final_pz - b0_pz;
+                    double dist = sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                        double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002; // slightly above surface
+                        double gx = b0_px + dx/dist * surf_r;
+                        double gy = b0_py + dy/dist * surf_r;
+                        double gz = b0_pz + dz/dist * surf_r;
+                        Vec3 gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
+                        if (mnv_executed) adv_mnv_ground_track.push_back(gt_pt);
+                        else adv_ground_track.push_back(gt_pt);
+                    }
                 }
                 if (mnv_executed && !burn_in_progress) {
                     adv_mnv_points.push_back(render_pt);
@@ -1641,21 +1663,41 @@ int main() {
                         float zc = p_sc.dot(uzt);
                         Vec3 recon = ux0 * xc + uy0 * yc + uz0 * zc;
                         o_final_px = recon.x; o_final_py = recon.y; o_final_pz = recon.z;
+                    } else if (adv_orbit_ref_mode == 2) { // Surface
+                        double dx = orig_px - SOLAR_SYSTEM[adv_orbit_ref_body].px;
+                        double dy = orig_py - SOLAR_SYSTEM[adv_orbit_ref_body].py;
+                        double dz = orig_pz - SOLAR_SYSTEM[adv_orbit_ref_body].pz;
+                        
+                        double rot_period = SOLAR_SYSTEM[adv_orbit_ref_body].rotation_period;
+                        double delta_theta = (t_sim - rocket_state.sim_time) * (2.0 * PI / rot_period);
+                        
+                        double c = cos(delta_theta);
+                        double s = sin(delta_theta);
+                        
+                        double recon_x = dx * c + dy * s;
+                        double recon_y = -dx * s + dy * c;
+                        double recon_z = dz;
+                        
+                        o_final_px = recon_x + b0_px;
+                        o_final_py = recon_y + b0_py;
+                        o_final_pz = recon_z + b0_pz;
                     }
                     Vec3 o_render_pt((float)(o_final_px * ws_d - ro_x), (float)(o_final_py * ws_d - ro_y), (float)(o_final_pz * ws_d - ro_z));
                     adv_points.push_back(o_render_pt); // Original path continues
                     
-                    double odx = o_final_px - b0_px;
-                    double ody = o_final_py - b0_py;
-                    double odz = o_final_pz - b0_pz;
-                    double odist = sqrt(odx*odx + ody*ody + odz*odz);
-                    if (odist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
-                        double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
-                        double gx = b0_px + odx/odist * surf_r;
-                        double gy = b0_py + ody/odist * surf_r;
-                        double gz = b0_pz + odz/odist * surf_r;
-                        Vec3 o_gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
-                        adv_ground_track.push_back(o_gt_pt);
+                    if (adv_orbit_ref_mode == 1) {
+                        double odx = o_final_px - b0_px;
+                        double ody = o_final_py - b0_py;
+                        double odz = o_final_pz - b0_pz;
+                        double odist = sqrt(odx*odx + ody*ody + odz*odz);
+                        if (odist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                            double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
+                            double gx = b0_px + odx/odist * surf_r;
+                            double gy = b0_py + ody/odist * surf_r;
+                            double gz = b0_pz + odz/odist * surf_r;
+                            Vec3 o_gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
+                            adv_ground_track.push_back(o_gt_pt);
+                        }
                     }
                 } else {
                     // During burn or no maneuver: everything goes to the primary (cyan) trajectory
@@ -1698,16 +1740,29 @@ int main() {
                     double fp = s_px, fpy = s_py, fpz = s_pz;
                     if (adv_orbit_ref_body != 0) {
                         if (adv_orbit_ref_mode == 0) { fp = (s_px-SOLAR_SYSTEM[adv_orbit_ref_body].px)+b0_px; fpy = (s_py-SOLAR_SYSTEM[adv_orbit_ref_body].py)+b0_py; fpz = (s_pz-SOLAR_SYSTEM[adv_orbit_ref_body].pz)+b0_pz; }
+                        else if (adv_orbit_ref_mode == 2) {
+                            double dx = s_px - SOLAR_SYSTEM[adv_orbit_ref_body].px;
+                            double dy = s_py - SOLAR_SYSTEM[adv_orbit_ref_body].py;
+                            double dz = s_pz - SOLAR_SYSTEM[adv_orbit_ref_body].pz;
+                            double rot_period = SOLAR_SYSTEM[adv_orbit_ref_body].rotation_period;
+                            double delta_theta = (s_t - rocket_state.sim_time) * (2.0 * PI / rot_period);
+                            double c = cos(delta_theta), s = sin(delta_theta);
+                            fp  = (dx * c + dy * s) + b0_px;
+                            fpy = (-dx * s + dy * c) + b0_py;
+                            fpz = dz + b0_pz;
+                        }
                     }
                     Vec3 rp((float)(fp * ws_d - ro_x), (float)(fpy * ws_d - ro_y), (float)(fpz * ws_d - ro_z));
                     adv_mnv_points.push_back(rp);
                     
-                    double mdx = fp - b0_px, mdy = fpy - b0_py, mdz = fpz - b0_pz;
-                    double mdist = sqrt(mdx*mdx + mdy*mdy + mdz*mdz);
-                    if (mdist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
-                        double sr = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
-                        Vec3 mgp((float)((b0_px + mdx/mdist*sr) * ws_d - ro_x), (float)((b0_py + mdy/mdist*sr) * ws_d - ro_y), (float)((b0_pz + mdz/mdist*sr) * ws_d - ro_z));
-                        adv_mnv_ground_track.push_back(mgp);
+                    if (adv_orbit_ref_mode == 1) {
+                        double mdx = fp - b0_px, mdy = fpy - b0_py, mdz = fpz - b0_pz;
+                        double mdist = sqrt(mdx*mdx + mdy*mdy + mdz*mdz);
+                        if (mdist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                            double sr = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
+                            Vec3 mgp((float)((b0_px + mdx/mdist*sr) * ws_d - ro_x), (float)((b0_py + mdy/mdist*sr) * ws_d - ro_y), (float)((b0_pz + mdz/mdist*sr) * ws_d - ro_z));
+                            adv_mnv_ground_track.push_back(mgp);
+                        }
                     }
                 }
                 PhysicsSystem::UpdateCelestialBodies(rocket_state.sim_time);
@@ -2260,32 +2315,41 @@ int main() {
             float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
             mnv_popup_close_hover = (!adv_embed_mnv) && (mouse_x >= close_x - close_size/2 && mouse_x <= close_x + close_size/2 &&
                                          mouse_y >= close_y - close_size/2 && mouse_y <= close_y + close_size/2);
+            mnv_popup_mini_hover = (adv_embed_mnv) && (mouse_x >= close_x - close_size/2 && mouse_x <= close_x + close_size/2 &&
+                                         mouse_y >= close_y - close_size/2 && mouse_y <= close_y + close_size/2);
             
-            // --- Mode Toggle Hit Test ---
-            float mode_btn_w = pw * 0.8f, mode_btn_h = 0.032f;
-            mnv_popup_mode_hover = (mouse_x >= pop_x - mode_btn_w/2 && mouse_x <= pop_x + mode_btn_w/2 &&
-                                    mouse_y >= mode_btn_y - mode_btn_h/2 && mouse_y <= mode_btn_y + mode_btn_h/2);
-            
-            if (mnv_popup_mode_hover && lmb && !lmb_prev_mnv) {
-                node.burn_mode = 1 - node.burn_mode;
-                node.snap_valid = false; // Force re-prediction
+            if (mnv_popup_mini_hover && lmb && !lmb_prev_mnv) {
+                adv_embed_mnv_mini = !adv_embed_mnv_mini;
                 popup_clicked_frame = true;
             }
 
-            // DELETE button hit test
-            float del_btn_w = 0.10f, del_btn_h = 0.03f;
-            mnv_popup_del_hover = (mouse_x >= pop_x - del_btn_w/2 && mouse_x <= pop_x + del_btn_w/2 &&
-                                   mouse_y >= del_btn_y - del_btn_h/2 && mouse_y <= del_btn_y + del_btn_h/2);
-            
-            // --- Slider dragging logic ---
-            for (int s = 0; s < 4; s++) {
-                float sy = slider_base_y - s * slider_spacing;
-                bool on_track = (mouse_x >= slider_cx - slider_track_w/2 - 0.02f && mouse_x <= slider_cx + slider_track_w/2 + 0.02f &&
-                                 mouse_y >= sy - slider_thumb_h && mouse_y <= sy + slider_thumb_h);
+            if (!adv_embed_mnv_mini) {
+                // --- Mode Toggle Hit Test ---
+                float mode_btn_w = pw * 0.8f, mode_btn_h = 0.032f;
+                mnv_popup_mode_hover = (mouse_x >= pop_x - mode_btn_w/2 && mouse_x <= pop_x + mode_btn_w/2 &&
+                                        mouse_y >= mode_btn_y - mode_btn_h/2 && mouse_y <= mode_btn_y + mode_btn_h/2);
                 
-                if (lmb && !lmb_prev_mnv && on_track && mnv_popup_slider_dragging == -1) {
-                    mnv_popup_slider_dragging = s;
-                    mnv_popup_slider_drag_x = mouse_x;
+                if (mnv_popup_mode_hover && lmb && !lmb_prev_mnv) {
+                    node.burn_mode = 1 - node.burn_mode;
+                    node.snap_valid = false; // Force re-prediction
+                    popup_clicked_frame = true;
+                }
+
+                // DELETE button hit test
+                float del_btn_w = 0.10f, del_btn_h = 0.03f;
+                mnv_popup_del_hover = (mouse_x >= pop_x - del_btn_w/2 && mouse_x <= pop_x + del_btn_w/2 &&
+                                       mouse_y >= del_btn_y - del_btn_h/2 && mouse_y <= del_btn_y + del_btn_h/2);
+                
+                // --- Slider dragging logic ---
+                for (int s = 0; s < 4; s++) {
+                    float sy = slider_base_y - s * slider_spacing;
+                    bool on_track = (mouse_x >= slider_cx - slider_track_w/2 - 0.02f && mouse_x <= slider_cx + slider_track_w/2 + 0.02f &&
+                                     mouse_y >= sy - slider_thumb_h && mouse_y <= sy + slider_thumb_h);
+                    
+                    if (lmb && !lmb_prev_mnv && on_track && mnv_popup_slider_dragging == -1) {
+                        mnv_popup_slider_dragging = s;
+                        mnv_popup_slider_drag_x = mouse_x;
+                    }
                 }
             }
             
@@ -3067,15 +3131,15 @@ int main() {
             renderer->drawText(menu_x - 0.12f, tog_y, "Mode:", 0.012f, 1, 1, 1, 1.0f);
             renderer->drawText(menu_x + 0.02f, tog_y, adv_orbit_enabled ? "N-BODY (RK4)" : "KEPLER (SOI)", 0.012f, adv_orbit_enabled?1:0.6f, adv_orbit_enabled?0.5f:1, 0.4f, 1.0f);
 
-            // Frame Type Switch (Inertial vs Co-rotating)
+            // Frame Type Switch (Inertial vs Co-rotating vs Surface)
             float fr_y = tog_y - 0.06f;
             renderer->drawText(menu_x - 0.12f, fr_y, "Frame:", 0.012f, 1, 1, 1, 1.0f);
             bool hover_fr_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= fr_y - 0.02f && hmouse_y <= fr_y + 0.02f);
             bool hover_fr_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= fr_y - 0.02f && hmouse_y <= fr_y + 0.02f);
-            if (hover_fr_l && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+1)%2;
-            if (hover_fr_r && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+1)%2;
+            if (hover_fr_l && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+2)%3;
+            if (hover_fr_r && hlmb && !hlmb_prev) adv_orbit_ref_mode = (adv_orbit_ref_mode+1)%3;
             renderer->drawText(menu_x + 0.01f, fr_y, "<", 0.012f, 1,1,1, hover_fr_l?1.0f:0.5f, true, Renderer::CENTER);
-            renderer->drawText(menu_x + 0.07f, fr_y, adv_orbit_ref_mode==0 ? "INERTIAL" : "CO-ROT", 0.010f, 1,1,1,1, true, Renderer::CENTER);
+            renderer->drawText(menu_x + 0.07f, fr_y, adv_orbit_ref_mode==0 ? "INERTIAL" : (adv_orbit_ref_mode==1 ? "CO-ROT" : "SURFACE"), 0.010f, 1,1,1,1, true, Renderer::CENTER);
             renderer->drawText(menu_x + 0.13f, fr_y, ">", 0.012f, 1,1,1, hover_fr_r?1.0f:0.5f, true, Renderer::CENTER);
 
             // Ref Body Switch
@@ -3241,7 +3305,7 @@ int main() {
                    
                    mnv_popup_px = menu_x;
                    mnv_popup_pw = menu_w + 0.02f;
-                   mnv_popup_ph = 0.40f;
+                   mnv_popup_ph = adv_embed_mnv_mini ? 0.12f : 0.40f;
                    mnv_popup_py = adv_menu_bottom - mnv_popup_ph / 2 - 0.005f;
                    mnv_popup_visible = true;
                    mnv_popup_index = 0;
@@ -3270,38 +3334,76 @@ int main() {
         renderer->addRect(pop_x, pop_y + ph * 0.35f, pw, ph * 0.3f, 0.08f, 0.08f, 0.18f, 0.3f); // Subtle highlight band
         renderer->addRectOutline(pop_x, pop_y, pw, ph, 0.3f, 0.5f, 1.0f, 0.8f);
         
-        // Close [X] button (top-right corner)
+        // Close / Mini button (top-right corner)
+        float close_size = 0.028f;
+        float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
+        float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
         if (!adv_embed_mnv) {
-            float close_size = 0.028f;
-            float close_x = pop_x + pw/2 - close_size/2 - 0.008f;
-            float close_y = pop_y + ph/2 - close_size/2 - 0.008f;
             renderer->addRect(close_x, close_y, close_size, close_size, 
                               mnv_popup_close_hover ? 0.8f : 0.3f, 0.15f, 0.15f, 0.9f);
             renderer->drawText(close_x, close_y, "X", 0.014f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
-        }
-        
-        // Title
-        float title_y = pop_y + ph/2 - (adv_embed_mnv ? 0.015f : 0.025f);
-        renderer->drawText(pop_x, title_y, "MANEUVER NODE", 0.013f, 0.5f, 0.8f, 1.0f, 1.0f, true, Renderer::CENTER);
-        
-        // Reference body
-        char ref_buf[64];
-        if (mnv_popup_ref_body >= 0 && mnv_popup_ref_body < (int)SOLAR_SYSTEM.size()) {
-            snprintf(ref_buf, sizeof(ref_buf), "REF: %s", SOLAR_SYSTEM[mnv_popup_ref_body].name.c_str());
         } else {
-            snprintf(ref_buf, sizeof(ref_buf), "REF: ---");
+            renderer->addRect(close_x, close_y, close_size, close_size, 
+                              mnv_popup_mini_hover ? 0.5f : 0.2f, mnv_popup_mini_hover ? 0.6f : 0.3f, 0.8f, 0.9f);
+            renderer->drawText(close_x, close_y, adv_embed_mnv_mini ? "+" : "-", 0.016f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
         }
-        renderer->drawText(pop_x, title_y - 0.022f, ref_buf, 0.009f, 0.4f, 0.7f, 0.9f, 0.8f, true, Renderer::CENTER);
         
-        // --- Delta-V Sliders ---
-        double pop_mx, pop_my; glfwGetCursorPos(window, &pop_mx, &pop_my);
-        float mouse_x = (float)(pop_mx / ww * 2.0 - 1.0);
-        
-        float slider_track_w = pw * 0.65f;
-        float slider_track_h = 0.012f;
-        float slider_base_y = title_y - (adv_embed_mnv ? 0.04f : 0.06f);
-        float slider_spacing = adv_embed_mnv ? 0.050f : 0.065f;
-        float slider_cx = pop_x + 0.02f;
+        if (adv_embed_mnv_mini) {
+            // Render ONLY Time and Burn time for mini dock
+            float info_y = pop_y + 0.01f;
+            float info_lx = pop_x - pw/2 + 0.03f;
+            char buf[64];
+            int t_min = (int)(mnv_popup_time_to_node / 60.0);
+            int t_sec = (int)fmod(abs((int)mnv_popup_time_to_node), 60.0);
+            
+            if (mnv_popup_time_to_node > 3600) {
+                int t_hr = (int)(mnv_popup_time_to_node / 3600.0);
+                t_min = (int)fmod(mnv_popup_time_to_node / 60.0, 60.0);
+                snprintf(buf, sizeof(buf), "%s: %dH %02dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_hr, t_min, t_sec);
+            } else if (mnv_popup_time_to_node >= 0) {
+                snprintf(buf, sizeof(buf), "%s: %dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_min, t_sec);
+            } else {
+                snprintf(buf, sizeof(buf), "BURN+ %dS", (int)(-mnv_popup_time_to_node));
+            }
+            float time_ratio = (float)fmin(1.0, fmax(0.0, mnv_popup_time_to_node / 120.0));
+            renderer->drawText(info_lx, info_y, buf, 0.010f, 
+                              1.0f - time_ratio * 0.7f, 0.3f + time_ratio * 0.7f, 0.2f, 1.0f, true, Renderer::LEFT);
+            
+            info_y -= 0.025f;
+            int b_min = (int)(mnv_popup_burn_time / 60.0);
+            int b_sec = (int)fmod(mnv_popup_burn_time, 60.0);
+            if (mnv_popup_burn_time >= 9999.0) {
+                snprintf(buf, sizeof(buf), "BURN: ---");
+            } else if (mnv_popup_burn_time > 60.0) {
+                snprintf(buf, sizeof(buf), "BURN: %dM %02dS", b_min, b_sec);
+            } else {
+                snprintf(buf, sizeof(buf), "BURN: %.1fS", mnv_popup_burn_time);
+            }
+            renderer->drawText(info_lx, info_y, buf, 0.010f, 0.9f, 0.7f, 0.3f, 1.0f, true, Renderer::LEFT);
+        } else {
+            // Render full normal UI
+            // Title
+            float title_y = pop_y + ph/2 - (adv_embed_mnv ? 0.015f : 0.025f);
+            renderer->drawText(pop_x, title_y, "MANEUVER NODE", 0.013f, 0.5f, 0.8f, 1.0f, 1.0f, true, Renderer::CENTER);
+            
+            // Reference body
+            char ref_buf[64];
+            if (mnv_popup_ref_body >= 0 && mnv_popup_ref_body < (int)SOLAR_SYSTEM.size()) {
+                snprintf(ref_buf, sizeof(ref_buf), "REF: %s", SOLAR_SYSTEM[mnv_popup_ref_body].name.c_str());
+            } else {
+                snprintf(ref_buf, sizeof(ref_buf), "REF: ---");
+            }
+            renderer->drawText(pop_x, title_y - 0.022f, ref_buf, 0.009f, 0.4f, 0.7f, 0.9f, 0.8f, true, Renderer::CENTER);
+            
+            // --- Delta-V Sliders ---
+            double pop_mx, pop_my; glfwGetCursorPos(window, &pop_mx, &pop_my);
+            float mouse_x = (float)(pop_mx / ww * 2.0 - 1.0);
+            
+            float slider_track_w = pw * 0.65f;
+            float slider_track_h = 0.012f;
+            float slider_base_y = title_y - (adv_embed_mnv ? 0.04f : 0.06f);
+            float slider_spacing = adv_embed_mnv ? 0.050f : 0.065f;
+            float slider_cx = pop_x + 0.02f;
         float label_x = pop_x - pw/2 + 0.012f;
         
         const char* slider_labels[] = {"PRO", "NRM", "RAD", "T"};
@@ -3417,13 +3519,14 @@ int main() {
         renderer->drawText(pop_x, mode_y, mode_names[mnv_popup_burn_mode], 0.009f, 0.7f, 0.9f, 1.0f, 1.0f, true, Renderer::CENTER);
         renderer->drawText(pop_x, mode_y - 0.022f, "(Click to Toggle)", 0.007f, 0.5f, 0.5f, 0.6f, 0.6f, false, Renderer::CENTER);
         
-        // --- DELETE button (bottom center) ---
-        float del_btn_y = pop_y - ph/2 + (adv_embed_mnv ? 0.015f : 0.025f);
-        float del_btn_w = 0.10f, del_btn_h = 0.03f;
-        renderer->addRect(pop_x, del_btn_y, del_btn_w, del_btn_h, 
-                          mnv_popup_del_hover ? 0.9f : 0.5f, mnv_popup_del_hover ? 0.15f : 0.08f, mnv_popup_del_hover ? 0.15f : 0.08f, 0.9f);
-        renderer->addRectOutline(pop_x, del_btn_y, del_btn_w, del_btn_h, 1.0f, 0.3f, 0.3f, 1.0f);
-        renderer->drawText(pop_x, del_btn_y, "DELETE", 0.012f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
+            // --- DELETE button (bottom center) ---
+            float del_btn_y = pop_y - ph/2 + (adv_embed_mnv ? 0.015f : 0.025f);
+            float del_btn_w = 0.10f, del_btn_h = 0.03f;
+            renderer->addRect(pop_x, del_btn_y, del_btn_w, del_btn_h, 
+                              mnv_popup_del_hover ? 0.9f : 0.5f, mnv_popup_del_hover ? 0.15f : 0.08f, mnv_popup_del_hover ? 0.15f : 0.08f, 0.9f);
+            renderer->addRectOutline(pop_x, del_btn_y, del_btn_w, del_btn_h, 1.0f, 0.3f, 0.3f, 1.0f);
+            renderer->drawText(pop_x, del_btn_y, "DELETE", 0.012f, 1.0f, 1.0f, 1.0f, 1.0f, false, Renderer::CENTER);
+        }
     }
     
     renderer->endFrame();
