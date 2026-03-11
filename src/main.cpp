@@ -559,16 +559,18 @@ int main() {
     static double mnv_popup_time_to_node = 0;   // seconds until maneuver
     static double mnv_popup_burn_time = 0;       // estimated burn time
     static int mnv_popup_ref_body = -1;          // reference body index
-    static int mnv_popup_slider_dragging = -1;   // -1=none, 0=prograde, 1=normal, 2=radial
+    static int mnv_popup_slider_dragging = -1;   // -1=none, 0=prograde, 1=normal, 2=radial, 3=time
     static float mnv_popup_slider_drag_x = 0;    // mouse x at drag start
+    static Vec3 adv_mnv_world_pos(0,0,0);        // Exact N-body maneuver visual position
     
     // Advanced Orbit Settings
     static bool adv_orbit_enabled = false;
     static bool adv_orbit_menu = false;
-    static int adv_orbit_step = 600;      // step size in seconds
-    static int adv_orbit_length = 3000;   // number of steps (3000 * 600 = ~20 days)
+    static float adv_orbit_pred_days = 30.0f;   // prediction time in days (user adjustable)
+    static int adv_orbit_iters = 4000;           // number of iterations (user adjustable)
     static int adv_orbit_ref_mode = 0;    // 0 = Inertial, 1 = Co-rotating
     static int adv_orbit_ref_body = 3;    // Earth default
+    static bool adv_warp_to_node = false; // warp-to-maneuver in progress
 
     static bool space_was_pressed = true; // Start true to ignore the Builder's enter/space
     bool space_now = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -1370,9 +1372,11 @@ int main() {
             // ==========================================
             std::vector<Vec3> adv_points;
             std::vector<Vec3> adv_mnv_points; // For prediction after maneuver
+            std::vector<Vec3> adv_ground_track;
+            std::vector<Vec3> adv_mnv_ground_track;
 
-            int STEPS = adv_orbit_length;
-            double dt = adv_orbit_step;
+            int STEPS = adv_orbit_iters;
+            double dt = (adv_orbit_pred_days * 86400.0) / (double)STEPS; // auto-calc step size
             
             // Get initial absolute state
             double cur_h_px = rocket_state.px + SOLAR_SYSTEM[current_soi_index].px;
@@ -1387,6 +1391,9 @@ int main() {
             bool has_mnv = (rocket_state.maneuvers.size() > 0);
             double mnv_t = has_mnv ? rocket_state.maneuvers[0].sim_time : 1e20;
             bool mnv_executed = false;
+            
+            double orig_px = 0, orig_py = 0, orig_pz = 0;
+            double orig_vx = 0, orig_vy = 0, orig_vz = 0;
             
             // Pre-calculate current basis for rendering mapping
             double b0_px = SOLAR_SYSTEM[adv_orbit_ref_body].px;
@@ -1423,55 +1430,112 @@ int main() {
                 }
             };
 
-            // Hit-testing state for RK4
-            float best_orb_dist = 1.0f;
-            double hit_t = -1.0;
-            double hit_px = 0, hit_py = 0, hit_pz = 0;
-            double hit_vx = 0, hit_vy = 0, hit_vz = 0;
-
-            double mx_curr, my_curr; 
-            glfwGetCursorPos(window, &mx_curr, &my_curr);
-            float mxf = (float)(mx_curr / ww * 2.0 - 1.0);
-            float myf = (float)(1.0 - my_curr / wh * 2.0);
-
             for (int i = 0; i < STEPS; i++) {
-                if (has_mnv && !mnv_executed && t_sim >= mnv_t) {
-                    PhysicsSystem::UpdateCelestialBodies(t_sim);
-                    double r_rel_x = cur_h_px - SOLAR_SYSTEM[current_soi_index].px;
-                    double r_rel_y = cur_h_py - SOLAR_SYSTEM[current_soi_index].py;
-                    double r_rel_z = cur_h_pz - SOLAR_SYSTEM[current_soi_index].pz;
-                    double v_rel_x = cur_h_vx - SOLAR_SYSTEM[current_soi_index].vx;
-                    double v_rel_y = cur_h_vy - SOLAR_SYSTEM[current_soi_index].vy;
-                    double v_rel_z = cur_h_vz - SOLAR_SYSTEM[current_soi_index].vz;
-                    
-                    ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)r_rel_x,(float)r_rel_y,(float)r_rel_z), Vec3((float)v_rel_x,(float)v_rel_y,(float)v_rel_z));
-                    Vec3 dv = frame.prograde * rocket_state.maneuvers[0].delta_v.x + 
-                              frame.normal   * rocket_state.maneuvers[0].delta_v.y + 
-                              frame.radial   * rocket_state.maneuvers[0].delta_v.z;
-                    cur_h_vx += dv.x; cur_h_vy += dv.y; cur_h_vz += dv.z;
-                    mnv_executed = true;
+                double step_dt = dt;
+                
+                if (has_mnv && !mnv_executed) {
+                    if (t_sim >= mnv_t) {
+                        // Extract point before applying burn
+                        if (!adv_points.empty()) {
+                            adv_mnv_world_pos = adv_points.back();
+                        } else {
+                            double fx=cur_h_px, fy=cur_h_py, fz=cur_h_pz;
+                            if (adv_orbit_ref_mode==0 && adv_orbit_ref_body!=0) { fx = (cur_h_px-SOLAR_SYSTEM[adv_orbit_ref_body].px)+b0_px; fy = (cur_h_py-SOLAR_SYSTEM[adv_orbit_ref_body].py)+b0_py; fz = (cur_h_pz-SOLAR_SYSTEM[adv_orbit_ref_body].pz)+b0_pz; }
+                            adv_mnv_world_pos = Vec3((float)(fx*ws_d - ro_x), (float)(fy*ws_d - ro_y), (float)(fz*ws_d - ro_z));
+                        }
+
+                        PhysicsSystem::UpdateCelestialBodies(t_sim);
+                        double r_rel_x = cur_h_px - SOLAR_SYSTEM[current_soi_index].px;
+                        double r_rel_y = cur_h_py - SOLAR_SYSTEM[current_soi_index].py;
+                        double r_rel_z = cur_h_pz - SOLAR_SYSTEM[current_soi_index].pz;
+                        double v_rel_x = cur_h_vx - SOLAR_SYSTEM[current_soi_index].vx;
+                        double v_rel_y = cur_h_vy - SOLAR_SYSTEM[current_soi_index].vy;
+                        double v_rel_z = cur_h_vz - SOLAR_SYSTEM[current_soi_index].vz;
+                        
+                        // Dynamically update the node's osculating Kepler parameters so the UI handles rotate correctly
+                        double r_mag = sqrt(r_rel_x*r_rel_x + r_rel_y*r_rel_y + r_rel_z*r_rel_z);
+                        double v_sq = v_rel_x*v_rel_x + v_rel_y*v_rel_y + v_rel_z*v_rel_z;
+                        double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
+                        Vec3 r_vec((float)r_rel_x, (float)r_rel_y, (float)r_rel_z);
+                        Vec3 v_vec((float)v_rel_x, (float)v_rel_y, (float)v_rel_z);
+                        Vec3 h_vec = r_vec.cross(v_vec);
+                        double energy = 0.5 * v_sq - mu / r_mag;
+                        double a = -mu / (2.0 * energy);
+                        if (a != 0) {
+                            Vec3 e_vec = v_vec.cross(h_vec) / (float)mu - r_vec / (float)r_mag;
+                            double ecc = e_vec.length();
+                            Vec3 e_dir = (ecc > 1e-7f) ? e_vec.normalized() : Vec3(1,0,0);
+                            Vec3 p_dir = h_vec.normalized().cross(e_dir).normalized();
+                            double s_cosE = (a - r_mag) / (a * ecc);
+                            double s_sinE = r_vec.dot(p_dir) / (a * sqrt(fmax(0.0, 1.0 - ecc*ecc)));
+                            double E0 = atan2(s_sinE, s_cosE);
+                            rocket_state.maneuvers[0].ref_a = a;
+                            rocket_state.maneuvers[0].ref_ecc = ecc;
+                            rocket_state.maneuvers[0].ref_M0 = E0;
+                            rocket_state.maneuvers[0].ref_n = sqrt(mu / (a * a * a));
+                            rocket_state.maneuvers[0].ref_center = e_dir * (-(float)a * (float)ecc);
+                            rocket_state.maneuvers[0].ref_e_dir = e_dir;
+                            rocket_state.maneuvers[0].ref_p_dir = p_dir;
+                        }
+                        
+                        ManeuverFrame frame = ManeuverSystem::getFrame(r_vec, v_vec);
+                        Vec3 dv = frame.prograde * rocket_state.maneuvers[0].delta_v.x + 
+                                  frame.normal   * rocket_state.maneuvers[0].delta_v.y + 
+                                  frame.radial   * rocket_state.maneuvers[0].delta_v.z;
+                                  
+                        orig_px = cur_h_px; orig_py = cur_h_py; orig_pz = cur_h_pz;
+                        orig_vx = cur_h_vx; orig_vy = cur_h_vy; orig_vz = cur_h_vz;
+                        
+                        cur_h_vx += dv.x; cur_h_vy += dv.y; cur_h_vz += dv.z;
+                        mnv_executed = true;
+                        continue; // Skip the integration time-step this loop, maneuver is applied instantly in-place!
+                    } else if (t_sim + dt > mnv_t) {
+                        step_dt = mnv_t - t_sim; // Sub-step exactly up to maneuver start time!
+                    }
                 }
                 
                 // RK4 evaluate
                 double k1_vx, k1_vy, k1_vz; calc_acc(t_sim, cur_h_px, cur_h_py, cur_h_pz, k1_vx, k1_vy, k1_vz);
                 double k1_px = cur_h_vx, k1_py = cur_h_vy, k1_pz = cur_h_vz;
                 
-                double k2_vx, k2_vy, k2_vz; calc_acc(t_sim+dt/2, cur_h_px+dt/2*k1_px, cur_h_py+dt/2*k1_py, cur_h_pz+dt/2*k1_pz, k2_vx, k2_vy, k2_vz);
-                double k2_px = cur_h_vx+dt/2*k1_vx, k2_py = cur_h_vy+dt/2*k1_vy, k2_pz = cur_h_vz+dt/2*k1_vz;
+                double k2_vx, k2_vy, k2_vz; calc_acc(t_sim+step_dt/2, cur_h_px+step_dt/2*k1_px, cur_h_py+step_dt/2*k1_py, cur_h_pz+step_dt/2*k1_pz, k2_vx, k2_vy, k2_vz);
+                double k2_px = cur_h_vx+step_dt/2*k1_vx, k2_py = cur_h_vy+step_dt/2*k1_vy, k2_pz = cur_h_vz+step_dt/2*k1_vz;
                 
-                double k3_vx, k3_vy, k3_vz; calc_acc(t_sim+dt/2, cur_h_px+dt/2*k2_px, cur_h_py+dt/2*k2_py, cur_h_pz+dt/2*k2_pz, k3_vx, k3_vy, k3_vz);
-                double k3_px = cur_h_vx+dt/2*k2_vx, k3_py = cur_h_vy+dt/2*k2_vy, k3_pz = cur_h_vz+dt/2*k2_vz;
+                double k3_vx, k3_vy, k3_vz; calc_acc(t_sim+step_dt/2, cur_h_px+step_dt/2*k2_px, cur_h_py+step_dt/2*k2_py, cur_h_pz+step_dt/2*k2_pz, k3_vx, k3_vy, k3_vz);
+                double k3_px = cur_h_vx+step_dt/2*k2_vx, k3_py = cur_h_vy+step_dt/2*k2_vy, k3_pz = cur_h_vz+step_dt/2*k2_vz;
                 
-                double k4_vx, k4_vy, k4_vz; calc_acc(t_sim+dt, cur_h_px+dt*k3_px, cur_h_py+dt*k3_py, cur_h_pz+dt*k3_pz, k4_vx, k4_vy, k4_vz);
-                double k4_px = cur_h_vx+dt*k3_vx, k4_py = cur_h_vy+dt*k3_vy, k4_pz = cur_h_vz+dt*k3_vz;
+                double k4_vx, k4_vy, k4_vz; calc_acc(t_sim+step_dt, cur_h_px+step_dt*k3_px, cur_h_py+step_dt*k3_py, cur_h_pz+step_dt*k3_pz, k4_vx, k4_vy, k4_vz);
+                double k4_px = cur_h_vx+step_dt*k3_vx, k4_py = cur_h_vy+step_dt*k3_vy, k4_pz = cur_h_vz+step_dt*k3_vz;
                 
-                cur_h_px += dt/6.0*(k1_px + 2*k2_px + 2*k3_px + k4_px);
-                cur_h_py += dt/6.0*(k1_py + 2*k2_py + 2*k3_py + k4_py);
-                cur_h_pz += dt/6.0*(k1_pz + 2*k2_pz + 2*k3_pz + k4_pz);
-                cur_h_vx += dt/6.0*(k1_vx + 2*k2_vx + 2*k3_vx + k4_vx);
-                cur_h_vy += dt/6.0*(k1_vy + 2*k2_vy + 2*k3_vy + k4_vy);
-                cur_h_vz += dt/6.0*(k1_vz + 2*k2_vz + 2*k3_vz + k4_vz);
-                t_sim += dt;
+                cur_h_px += step_dt/6.0*(k1_px + 2*k2_px + 2*k3_px + k4_px);
+                cur_h_py += step_dt/6.0*(k1_py + 2*k2_py + 2*k3_py + k4_py);
+                cur_h_pz += step_dt/6.0*(k1_pz + 2*k2_pz + 2*k3_pz + k4_pz);
+                cur_h_vx += step_dt/6.0*(k1_vx + 2*k2_vx + 2*k3_vx + k4_vx);
+                cur_h_vy += step_dt/6.0*(k1_vy + 2*k2_vy + 2*k3_vy + k4_vy);
+                cur_h_vz += step_dt/6.0*(k1_vz + 2*k2_vz + 2*k3_vz + k4_vz);
+                
+                if (mnv_executed) {
+                    double ok1_vx, ok1_vy, ok1_vz; calc_acc(t_sim, orig_px, orig_py, orig_pz, ok1_vx, ok1_vy, ok1_vz);
+                    double ok1_px = orig_vx, ok1_py = orig_vy, ok1_pz = orig_vz;
+                    
+                    double ok2_vx, ok2_vy, ok2_vz; calc_acc(t_sim+step_dt/2, orig_px+step_dt/2*ok1_px, orig_py+step_dt/2*ok1_py, orig_pz+step_dt/2*ok1_pz, ok2_vx, ok2_vy, ok2_vz);
+                    double ok2_px = orig_vx+step_dt/2*ok1_vx, ok2_py = orig_vy+step_dt/2*ok1_vy, ok2_pz = orig_vz+step_dt/2*ok1_vz;
+                    
+                    double ok3_vx, ok3_vy, ok3_vz; calc_acc(t_sim+step_dt/2, orig_px+step_dt/2*ok2_px, orig_py+step_dt/2*ok2_py, orig_pz+step_dt/2*ok2_pz, ok3_vx, ok3_vy, ok3_vz);
+                    double ok3_px = orig_vx+step_dt/2*ok2_vx, ok3_py = orig_vy+step_dt/2*ok2_vy, ok3_pz = orig_vz+step_dt/2*ok2_vz;
+                    
+                    double ok4_vx, ok4_vy, ok4_vz; calc_acc(t_sim+step_dt, orig_px+step_dt*ok3_px, orig_py+step_dt*ok3_py, orig_pz+step_dt*ok3_pz, ok4_vx, ok4_vy, ok4_vz);
+                    double ok4_px = orig_vx+step_dt*ok3_vx, ok4_py = orig_vy+step_dt*ok3_vy, ok4_pz = orig_vz+step_dt*ok3_vz;
+                    
+                    orig_px += step_dt/6.0*(ok1_px + 2*ok2_px + 2*ok3_px + ok4_px);
+                    orig_py += step_dt/6.0*(ok1_py + 2*ok2_py + 2*ok3_py + ok4_py);
+                    orig_pz += step_dt/6.0*(ok1_pz + 2*ok2_pz + 2*ok3_pz + ok4_pz);
+                    orig_vx += step_dt/6.0*(ok1_vx + 2*ok2_vx + 2*ok3_vx + ok4_vx);
+                    orig_vy += step_dt/6.0*(ok1_vy + 2*ok2_vy + 2*ok3_vy + ok4_vy);
+                    orig_vz += step_dt/6.0*(ok1_vz + 2*ok2_vz + 2*ok3_vz + ok4_vz);
+                }
+                
+                t_sim += step_dt;
 
                 // Sync planets to new t_sim to extract rendering reference
                 PhysicsSystem::UpdateCelestialBodies(t_sim);
@@ -1503,87 +1567,92 @@ int main() {
                 }
                 
                 Vec3 render_pt((float)(final_px * ws_d - ro_x), (float)(final_py * ws_d - ro_y), (float)(final_pz * ws_d - ro_z));
-                // RK4 hit testing for Maneuver generation
-                if (!has_mnv) {
-                    Vec2 scr = ManeuverSystem::projectToScreen(render_pt, viewMat, macroProjMat, (float)ww/wh);
-                    float d = sqrtf(powf(scr.x - mxf, 2) + powf(scr.y - myf, 2));
-                    if (d < best_orb_dist) {
-                        best_orb_dist = d;
-                        hit_t = t_sim;
-                        hit_px = cur_h_px; hit_py = cur_h_py; hit_pz = cur_h_pz;
-                        hit_vx = cur_h_vx; hit_vy = cur_h_vy; hit_vz = cur_h_vz;
-                    }
+                // Ground track point calculation
+                double dx = final_px - b0_px;
+                double dy = final_py - b0_py;
+                double dz = final_pz - b0_pz;
+                double dist = sqrt(dx*dx + dy*dy + dz*dz);
+                if (dist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                    double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002; // slightly above surface
+                    double gx = b0_px + dx/dist * surf_r;
+                    double gy = b0_py + dy/dist * surf_r;
+                    double gz = b0_pz + dz/dist * surf_r;
+                    Vec3 gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
+                    if (mnv_executed) adv_mnv_ground_track.push_back(gt_pt);
+                    else adv_ground_track.push_back(gt_pt);
                 }
-                
-                // Discard rendering artifacts from crossing rendering origin by keeping points sane
-                if (mnv_executed) adv_mnv_points.push_back(render_pt);
-                else adv_points.push_back(render_pt);
+                if (mnv_executed) {
+                    adv_mnv_points.push_back(render_pt);
+                    
+                    // Render shadowed original path
+                    double o_final_px = orig_px, o_final_py = orig_py, o_final_pz = orig_pz;
+                    if (adv_orbit_ref_mode == 0 && adv_orbit_ref_body != 0) { // Inertial
+                        o_final_px = (orig_px - SOLAR_SYSTEM[adv_orbit_ref_body].px) + b0_px;
+                        o_final_py = (orig_py - SOLAR_SYSTEM[adv_orbit_ref_body].py) + b0_py;
+                        o_final_pz = (orig_pz - SOLAR_SYSTEM[adv_orbit_ref_body].pz) + b0_pz;
+                    } else if (adv_orbit_ref_mode == 1) { // Co-rotating
+                        Vec3 p_sc((float)orig_px, (float)orig_py, (float)orig_pz);
+                        Vec3 R(SOLAR_SYSTEM[adv_orbit_ref_body].px, SOLAR_SYSTEM[adv_orbit_ref_body].py, SOLAR_SYSTEM[adv_orbit_ref_body].pz);
+                        Vec3 V(SOLAR_SYSTEM[adv_orbit_ref_body].vx, SOLAR_SYSTEM[adv_orbit_ref_body].vy, SOLAR_SYSTEM[adv_orbit_ref_body].vz);
+                        Vec3 uxt = R.normalized();
+                        Vec3 uzt = R.cross(V).normalized();
+                        Vec3 uyt = uzt.cross(uxt).normalized();
+                        float xc = p_sc.dot(uxt);
+                        float yc = p_sc.dot(uyt);
+                        float zc = p_sc.dot(uzt);
+                        Vec3 recon = ux0 * xc + uy0 * yc + uz0 * zc;
+                        o_final_px = recon.x; o_final_py = recon.y; o_final_pz = recon.z;
+                    }
+                    Vec3 o_render_pt((float)(o_final_px * ws_d - ro_x), (float)(o_final_py * ws_d - ro_y), (float)(o_final_pz * ws_d - ro_z));
+                    adv_points.push_back(o_render_pt); // Original path continues to be traced
+                    
+                    double odx = o_final_px - b0_px;
+                    double ody = o_final_py - b0_py;
+                    double odz = o_final_pz - b0_pz;
+                    double odist = sqrt(odx*odx + ody*ody + odz*odz);
+                    if (odist > 0 && SOLAR_SYSTEM[adv_orbit_ref_body].radius > 0) {
+                        double surf_r = SOLAR_SYSTEM[adv_orbit_ref_body].radius * 1.002;
+                        double gx = b0_px + odx/odist * surf_r;
+                        double gy = b0_py + ody/odist * surf_r;
+                        double gz = b0_pz + odz/odist * surf_r;
+                        Vec3 o_gt_pt((float)(gx * ws_d - ro_x), (float)(gy * ws_d - ro_y), (float)(gz * ws_d - ro_z));
+                        adv_ground_track.push_back(o_gt_pt);
+                    }
+                } else {
+                    adv_points.push_back(render_pt);
+                }
             }
             // Restore current sim state
             PhysicsSystem::UpdateCelestialBodies(rocket_state.sim_time);
 
-            // If we hovered an RK4 point, calculate its osculating Keplerian parameters for the maneuver node system
-            if (!has_mnv && hit_t >= 0 && best_orb_dist < 0.05f) {
-                // Use Earth as generic reference body for osculating orbit
-                int ref_soi = current_soi_index;
-                double mu = 6.67430e-11 * SOLAR_SYSTEM[ref_soi].mass;
-                double r_rel_x = hit_px - SOLAR_SYSTEM[ref_soi].px;
-                double r_rel_y = hit_py - SOLAR_SYSTEM[ref_soi].py;
-                double r_rel_z = hit_pz - SOLAR_SYSTEM[ref_soi].pz;
-                double v_rel_x = hit_vx - SOLAR_SYSTEM[ref_soi].vx;
-                double v_rel_y = hit_vy - SOLAR_SYSTEM[ref_soi].vy;
-                double v_rel_z = hit_vz - SOLAR_SYSTEM[ref_soi].vz;
-                
-                Vec3 r_vec((float)r_rel_x, (float)r_rel_y, (float)r_rel_z);
-                Vec3 v_vec((float)v_rel_x, (float)v_rel_y, (float)v_rel_z);
-                double r_mag = r_vec.length();
-                double v_sq = v_vec.lengthSq();
-                Vec3 h_vec = r_vec.cross(v_vec);
-                double energy = 0.5 * v_sq - mu / r_mag;
-                double a = -mu / (2.0 * energy);
-                Vec3 e_vec = v_vec.cross(h_vec) / (float)mu - r_vec / (float)r_mag;
-                double ecc = e_vec.length();
-                Vec3 e_dir = (ecc > 1e-7f) ? e_vec.normalized() : Vec3(1,0,0);
-                Vec3 p_dir = h_vec.normalized().cross(e_dir).normalized();
-                
-                double s_cosE = (a - r_mag) / (a * ecc);
-                double s_sinE = r_vec.dot(p_dir) / (a * sqrt(fmax(0.0, 1.0 - ecc*ecc)));
-                double E0 = atan2(s_sinE, s_cosE);
-                double M0 = E0 - ecc * sin(E0);
-                
-                global_best_ang = (float)E0; // Hack: store E0 or True anomaly, Maneuver system actually expects True anomaly or uses it to recreate
-                global_best_mu = mu;
-                global_best_a = a;
-                global_best_ecc = ecc;
-                global_best_center = e_dir * (-(float)a * (float)ecc);
-                global_best_e_dir = e_dir;
-                global_best_perp_dir = p_dir;
-                global_best_ref_node = ref_soi;
-                
-                // M0 is needed
-                global_current_M0 = M0;
-                global_current_n = sqrt(mu / (a * a * a));
-                
-                // Set the exact time by modifying M0 so it acts like it's reached at hit_t
-                double dt_to_hit = hit_t - rocket_state.sim_time;
-                global_current_M0 -= global_current_n * dt_to_hit; 
-                
-                global_best_pt = Vec3((float)(hit_px * ws_d - ro_x), (float)(hit_py * ws_d - ro_y), (float)(hit_pz * ws_d - ro_z));
-            }
-
             // Draw Predicted Path
             float ribbon_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
             if (adv_points.size() > 1) {
-                r3d->drawRibbon(adv_points, ribbon_w, 0.4f, 1.0f, 0.6f, 0.8f);
+                // Original Predicted Path matches the celestial body color scheme basically matching Keplerian (Cyan/Blue)
+                r3d->drawRibbon(adv_points, ribbon_w, 0.4f, 0.8f, 1.0f, 0.85f);
             }
             if (adv_mnv_points.size() > 1) {
-                // Dashed line logic for maneuver prediction
+                // Dashed line logic for maneuver prediction: Make it Orange
                 for (size_t s = 0; s < adv_mnv_points.size(); s += 5) {
                     std::vector<Vec3> dash;
                     for (size_t j = 0; j < 3; j++) {
                         if (s + j < adv_mnv_points.size()) dash.push_back(adv_mnv_points[s + j]);
                     }
-                    if (dash.size() >= 2) r3d->drawRibbon(dash, ribbon_w, 1.0f, 1.0f, 1.0f, 0.7f);
+                    if (dash.size() >= 2) r3d->drawRibbon(dash, ribbon_w, 1.0f, 0.6f, 0.1f, 0.9f);
+                }
+            }
+            // Draw Ground Tracks
+            float gt_w = earth_r * 0.002f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+            if (adv_ground_track.size() > 1) {
+                r3d->drawRibbon(adv_ground_track, gt_w, 0.4f, 0.8f, 1.0f, 0.6f);
+            }
+            if (adv_mnv_ground_track.size() > 1) {
+                for (size_t s = 0; s < adv_mnv_ground_track.size(); s += 5) {
+                    std::vector<Vec3> dash;
+                    for (size_t j = 0; j < 3; j++) {
+                        if (s + j < adv_mnv_ground_track.size()) dash.push_back(adv_mnv_ground_track[s + j]);
+                    }
+                    if (dash.size() >= 2) r3d->drawRibbon(dash, gt_w, 1.0f, 0.6f, 0.1f, 0.6f);
                 }
             }
 
@@ -1872,6 +1941,9 @@ int main() {
             Vec3 node_world = Vec3((float)(ref_px * ws_d + pt_node_rel.x * ws_d - ro_x), 
                               (float)(ref_py * ws_d + pt_node_rel.y * ws_d - ro_y), 
                               (float)(ref_pz * ws_d + pt_node_rel.z * ws_d - ro_z));
+            if (adv_orbit_enabled && i == 0) {
+                node_world = adv_mnv_world_pos;
+            }
             Vec2 n_scr = ManeuverSystem::projectToScreen(node_world, viewMat, macroProjMat, as_ratio);
             float d_mouse = sqrtf(powf(n_scr.x - mouse_x, 2) + powf(n_scr.y - mouse_y, 2));
 
@@ -2000,7 +2072,7 @@ int main() {
             
             // Popup layout - enlarged for sliders, time info, reference frame
             float pop_x = n_scr.x + 0.22f, pop_y = n_scr.y;
-            float pw = 0.38f, ph = 0.48f;
+            float pw = 0.38f, ph = 0.55f;
             
             // Clamp popup to stay within screen bounds
             if (pop_x + pw/2 > 0.98f) pop_x = 0.98f - pw/2;
@@ -2074,7 +2146,7 @@ int main() {
             // --- Slider dragging logic ---
             // Each slider: drag left = decrease, drag right = increase
             // Sensitivity increases exponentially with drag distance from center
-            for (int s = 0; s < 3; s++) {
+            for (int s = 0; s < 4; s++) {
                 float sy = slider_base_y - s * slider_spacing;
                 bool on_track = (mouse_x >= slider_cx - slider_track_w/2 - 0.02f && mouse_x <= slider_cx + slider_track_w/2 + 0.02f &&
                                  mouse_y >= sy - slider_thumb_h && mouse_y <= sy + slider_thumb_h);
@@ -2090,12 +2162,18 @@ int main() {
                 // Exponential sensitivity: small drags = fine control, large drags = fast
                 float sign = (drag_offset >= 0) ? 1.0f : -1.0f;
                 float abs_offset = fabsf(drag_offset);
-                // Scale: at 0.01 offset = 1 m/s per second, at 0.1 offset = 100 m/s per second
-                float rate = sign * abs_offset * abs_offset * 5000.0f * (float)dt;
                 
-                if (mnv_popup_slider_dragging == 0) node.delta_v.x += rate;
-                else if (mnv_popup_slider_dragging == 1) node.delta_v.y += rate;
-                else if (mnv_popup_slider_dragging == 2) node.delta_v.z += rate;
+                if (mnv_popup_slider_dragging < 3) {
+                    float rate = sign * abs_offset * abs_offset * 5000.0f * (float)dt;
+                    if (mnv_popup_slider_dragging == 0) node.delta_v.x += rate;
+                    else if (mnv_popup_slider_dragging == 1) node.delta_v.y += rate;
+                    else if (mnv_popup_slider_dragging == 2) node.delta_v.z += rate;
+                } else if (mnv_popup_slider_dragging == 3) {
+                    float t_rate = sign * abs_offset * abs_offset * 1000000.0f * (float)dt;
+                    node.sim_time += t_rate;
+                    if (node.sim_time < rocket_state.sim_time + 10.0) node.sim_time = rocket_state.sim_time + 10.0;
+                }
+                
                 node.active = true;
                 mnv_popup_dv = node.delta_v; // Update cached value
             }
@@ -2842,9 +2920,9 @@ int main() {
 
         if (adv_orbit_menu) {
             float menu_w = 0.30f;
-            float menu_h = 0.35f;
+            float menu_h = 0.58f;
             float menu_x = adv_btn_x - adv_btn_w/2 - menu_w/2 - 0.02f;
-            float menu_y = adv_btn_y;
+            float menu_y = adv_btn_y - 0.10f;
             renderer->addRect(menu_x, menu_y, menu_w, menu_h, 0.05f, 0.05f, 0.1f, 0.85f);
             renderer->addRectOutline(menu_x, menu_y, menu_w, menu_h, 0.4f, 0.6f, 1.0f, 0.8f);
             
@@ -2878,26 +2956,125 @@ int main() {
             }
             renderer->drawText(menu_x + 0.13f, bd_y, ">", 0.012f, 1,1,1, hover_bd_r?1.0f:0.5f, true, Renderer::CENTER);
 
-            // Step Size Switch
-            float step_y = bd_y - 0.06f;
-            renderer->drawText(menu_x - 0.12f, step_y, "Step (s):", 0.012f, 1, 1, 1, 1.0f);
-            bool hover_st_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= step_y - 0.02f && hmouse_y <= step_y + 0.02f);
-            bool hover_st_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= step_y - 0.02f && hmouse_y <= step_y + 0.02f);
-            int step_opts[] = {60, 300, 600, 1800, 3600};
-            int cur_st_idx = 0;
-            for (int j=0; j<5; j++) if(adv_orbit_step == step_opts[j]) cur_st_idx = j;
-            if (hover_st_l && hlmb && !hlmb_prev && cur_st_idx > 0) adv_orbit_step = step_opts[cur_st_idx-1];
-            if (hover_st_r && hlmb && !hlmb_prev && cur_st_idx < 4) adv_orbit_step = step_opts[cur_st_idx+1];
-            renderer->drawText(menu_x + 0.01f, step_y, "<", 0.012f, 1,1,1, hover_st_l?1.0f:0.5f, true, Renderer::CENTER);
-            char st_str[32]; snprintf(st_str, sizeof(st_str), "%d", adv_orbit_step);
-            renderer->drawText(menu_x + 0.07f, step_y, st_str, 0.010f, 1,1,1,1, true, Renderer::CENTER);
-            renderer->drawText(menu_x + 0.13f, step_y, ">", 0.012f, 1,1,1, hover_st_r?1.0f:0.5f, true, Renderer::CENTER);
+            // --- Prediction Time Slider ---
+            float pred_y = bd_y - 0.06f;
+            renderer->drawText(menu_x - 0.12f, pred_y, "Predict:", 0.012f, 1, 1, 1, 1.0f);
+            float pred_slider_w = menu_w * 0.50f;
+            float pred_slider_x = menu_x + 0.04f;
+            float pred_slider_h = 0.012f;
+            renderer->addRect(pred_slider_x, pred_y, pred_slider_w, pred_slider_h, 0.15f, 0.15f, 0.2f, 0.8f);
+            renderer->addRectOutline(pred_slider_x, pred_y, pred_slider_w, pred_slider_h, 0.3f, 0.6f, 0.9f, 0.6f);
+            // Map log scale: 1 day to 3650 days (10 years)
+            float pred_log_min = logf(1.0f);
+            float pred_log_max = logf(3650.0f);
+            float pred_ratio = (logf(adv_orbit_pred_days) - pred_log_min) / (pred_log_max - pred_log_min);
+            pred_ratio = fmaxf(0.0f, fminf(1.0f, pred_ratio));
+            float pred_thumb_x = pred_slider_x - pred_slider_w/2 + pred_ratio * pred_slider_w;
+            renderer->addRect(pred_thumb_x, pred_y, 0.012f, 0.022f, 0.3f, 0.7f, 1.0f, 0.95f);
             
-            // Expected Duration Info
-            float len_y = step_y - 0.06f;
-            renderer->drawText(menu_x - 0.12f, len_y, "Sim Length:", 0.012f, 1,1,1, 1.0f);
-            char len_str[64]; snprintf(len_str, sizeof(len_str), "%.1f Days", (adv_orbit_step * adv_orbit_length) / 86400.0f);
-            renderer->drawText(menu_x + 0.07f, len_y, len_str, 0.010f, 0.8f, 0.8f, 0.8f, 1.0f, true, Renderer::CENTER);
+            // Drag logic for prediction slider
+            static bool pred_slider_dragging = false;
+            if (hlmb && !hlmb_prev && hmouse_x >= pred_slider_x - pred_slider_w/2 - 0.01f && hmouse_x <= pred_slider_x + pred_slider_w/2 + 0.01f && hmouse_y >= pred_y - 0.02f && hmouse_y <= pred_y + 0.02f) {
+                pred_slider_dragging = true;
+            }
+            if (!hlmb) pred_slider_dragging = false;
+            if (pred_slider_dragging) {
+                float r = (hmouse_x - (pred_slider_x - pred_slider_w/2)) / pred_slider_w;
+                r = fmaxf(0.0f, fminf(1.0f, r));
+                adv_orbit_pred_days = expf(pred_log_min + r * (pred_log_max - pred_log_min));
+            }
+            char pred_str[64];
+            if (adv_orbit_pred_days < 1.5f) snprintf(pred_str, sizeof(pred_str), "%.0f Day", adv_orbit_pred_days);
+            else if (adv_orbit_pred_days < 365.0f) snprintf(pred_str, sizeof(pred_str), "%.0f Days", adv_orbit_pred_days);
+            else snprintf(pred_str, sizeof(pred_str), "%.1f Yrs", adv_orbit_pred_days / 365.25f);
+            renderer->drawText(pred_slider_x + pred_slider_w/2 + 0.015f, pred_y, pred_str, 0.009f, 0.8f, 0.8f, 0.8f, 1.0f, true, Renderer::LEFT);
+
+            // --- Iteration Count Switch ---
+            float iter_y = pred_y - 0.05f;
+            renderer->drawText(menu_x - 0.12f, iter_y, "Iters:", 0.012f, 1, 1, 1, 1.0f);
+            bool hover_it_l = (hmouse_x >= menu_x - 0.01f && hmouse_x <= menu_x + 0.03f && hmouse_y >= iter_y - 0.02f && hmouse_y <= iter_y + 0.02f);
+            bool hover_it_r = (hmouse_x >= menu_x + 0.11f && hmouse_x <= menu_x + 0.15f && hmouse_y >= iter_y - 0.02f && hmouse_y <= iter_y + 0.02f);
+            int iter_opts[] = {500, 1000, 2000, 4000, 8000, 16000, 32000};
+            int cur_it_idx = 3; // default 4000
+            for (int j=0; j<7; j++) if(adv_orbit_iters == iter_opts[j]) cur_it_idx = j;
+            if (hover_it_l && hlmb && !hlmb_prev && cur_it_idx > 0) adv_orbit_iters = iter_opts[cur_it_idx-1];
+            if (hover_it_r && hlmb && !hlmb_prev && cur_it_idx < 6) adv_orbit_iters = iter_opts[cur_it_idx+1];
+            renderer->drawText(menu_x + 0.01f, iter_y, "<", 0.012f, 1,1,1, hover_it_l?1.0f:0.5f, true, Renderer::CENTER);
+            char it_str[32]; snprintf(it_str, sizeof(it_str), "%d", adv_orbit_iters);
+            renderer->drawText(menu_x + 0.07f, iter_y, it_str, 0.010f, 1,1,1,1, true, Renderer::CENTER);
+            renderer->drawText(menu_x + 0.13f, iter_y, ">", 0.012f, 1,1,1, hover_it_r?1.0f:0.5f, true, Renderer::CENTER);
+
+            // Computed Step Info
+            float info_y = iter_y - 0.04f;
+            double computed_step = (adv_orbit_pred_days * 86400.0) / (double)adv_orbit_iters;
+            char step_info[64];
+            if (computed_step < 60.0) snprintf(step_info, sizeof(step_info), "Step: %.1f s", computed_step);
+            else if (computed_step < 3600.0) snprintf(step_info, sizeof(step_info), "Step: %.1f min", computed_step / 60.0);
+            else snprintf(step_info, sizeof(step_info), "Step: %.1f hr", computed_step / 3600.0);
+            renderer->drawText(menu_x - 0.12f, info_y, step_info, 0.009f, 0.6f, 0.6f, 0.6f, 0.8f);
+            
+            // Separator
+            renderer->addRect(menu_x, info_y - 0.025f, menu_w - 0.04f, 0.002f, 0.3f, 0.5f, 0.7f, 0.5f);
+
+            // Generate Maneuver Node Button
+            float cr_btn_y = info_y - 0.05f;
+            bool hover_cr = (hmouse_x >= menu_x - menu_w/2 + 0.02f && hmouse_x <= menu_x + menu_w/2 - 0.02f && hmouse_y >= cr_btn_y - 0.015f && hmouse_y <= cr_btn_y + 0.015f);
+            renderer->addRectOutline(menu_x, cr_btn_y, menu_w - 0.04f, 0.03f, 0.4f, 0.8f, 0.4f, 0.8f);
+            renderer->drawText(menu_x, cr_btn_y, "CREATE MANEUVER NODE", 0.010f, 0.4f, 0.8f, 0.4f, 1.0f, true, Renderer::CENTER);
+            
+            if (hover_cr && hlmb && !hlmb_prev) {
+                ManeuverNode node;
+                node.sim_time = rocket_state.sim_time + 600.0; // 10 minutes ahead
+                node.delta_v = Vec3(0, 0, 0);
+                node.active = true;
+                node.ref_body = current_soi_index;
+                rocket_state.maneuvers.clear();
+                rocket_state.maneuvers.push_back(node);
+                rocket_state.selected_maneuver_index = 0;
+                global_best_ang = 0; // Disable keplerian hit-testing state
+            }
+            
+            // Warp to Maneuver Node Button
+            float warp_btn_y = cr_btn_y - 0.05f;
+            bool has_mnv_btn = !rocket_state.maneuvers.empty();
+            float warp_r = has_mnv_btn ? 1.0f : 0.4f, warp_g = has_mnv_btn ? 0.7f : 0.4f, warp_b = has_mnv_btn ? 0.2f : 0.4f;
+            bool hover_warp = has_mnv_btn && (hmouse_x >= menu_x - menu_w/2 + 0.02f && hmouse_x <= menu_x + menu_w/2 - 0.02f && hmouse_y >= warp_btn_y - 0.015f && hmouse_y <= warp_btn_y + 0.015f);
+            renderer->addRectOutline(menu_x, warp_btn_y, menu_w - 0.04f, 0.03f, warp_r, warp_g, warp_b, has_mnv_btn ? 0.8f : 0.3f);
+            if (adv_warp_to_node) {
+                renderer->addRect(menu_x, warp_btn_y, menu_w - 0.04f, 0.03f, 1.0f, 0.5f, 0.1f, 0.4f);
+                renderer->drawText(menu_x, warp_btn_y, "WARPING...", 0.010f, 1.0f, 0.8f, 0.2f, 1.0f, true, Renderer::CENTER);
+            } else {
+                renderer->drawText(menu_x, warp_btn_y, "WARP TO NODE", 0.010f, warp_r, warp_g, warp_b, has_mnv_btn ? 1.0f : 0.4f, true, Renderer::CENTER);
+            }
+            
+            if (hover_warp && hlmb && !hlmb_prev && has_mnv_btn) {
+                adv_warp_to_node = !adv_warp_to_node; // Toggle
+            }
+            
+            // Process warp-to-node: set time_warp to max safe level until near the node
+            if (adv_warp_to_node && has_mnv_btn) {
+                double time_to_mnv = rocket_state.maneuvers[0].sim_time - rocket_state.sim_time;
+                if (time_to_mnv <= 60.0) {
+                    // Arrived! Stop warping
+                    time_warp = 1;
+                    adv_warp_to_node = false;
+                } else if (time_to_mnv > 86400.0 * 10) {
+                    time_warp = 10000000; // 10M
+                } else if (time_to_mnv > 86400.0) {
+                    time_warp = 1000000; // 1M
+                } else if (time_to_mnv > 3600.0 * 4) {
+                    time_warp = 100000; // 100K
+                } else if (time_to_mnv > 3600.0) {
+                    time_warp = 10000; // 10K
+                } else if (time_to_mnv > 600.0) {
+                    time_warp = 1000;
+                } else if (time_to_mnv > 120.0) {
+                    time_warp = 100;
+                } else {
+                    time_warp = 10;
+                }
+            }
+            
         }
     }
     
@@ -2941,6 +3118,9 @@ int main() {
         renderer->drawText(pop_x, title_y - 0.022f, ref_buf, 0.009f, 0.4f, 0.7f, 0.9f, 0.8f, true, Renderer::CENTER);
         
         // --- Delta-V Sliders ---
+        double pop_mx, pop_my; glfwGetCursorPos(window, &pop_mx, &pop_my);
+        float mouse_x = (float)(pop_mx / ww * 2.0 - 1.0);
+        
         float slider_track_w = pw * 0.65f;
         float slider_track_h = 0.012f;
         float slider_base_y = title_y - 0.06f;
@@ -2948,11 +3128,11 @@ int main() {
         float slider_cx = pop_x + 0.02f;
         float label_x = pop_x - pw/2 + 0.012f;
         
-        const char* slider_labels[] = {"PRO", "NRM", "RAD"};
-        float slider_colors[][3] = {{1.0f, 0.9f, 0.1f}, {1.0f, 0.1f, 1.0f}, {0.1f, 0.8f, 1.0f}};
-        float dv_vals[] = {mnv_popup_dv.x, mnv_popup_dv.y, mnv_popup_dv.z};
+        const char* slider_labels[] = {"PRO", "NRM", "RAD", "T"};
+        float slider_colors[][3] = {{1.0f, 0.9f, 0.1f}, {1.0f, 0.1f, 1.0f}, {0.1f, 0.8f, 1.0f}, {0.1f, 1.0f, 0.5f}};
+        float dv_vals[] = {mnv_popup_dv.x, mnv_popup_dv.y, mnv_popup_dv.z, 0.0f}; // T slider snaps back to 0
         
-        for (int s = 0; s < 3; s++) {
+        for (int s = 0; s < 4; s++) {
             float sy = slider_base_y - s * slider_spacing;
             float cr = slider_colors[s][0], cg = slider_colors[s][1], cb = slider_colors[s][2];
             
@@ -2961,9 +3141,14 @@ int main() {
             
             // Value display
             char val_buf[32];
-            snprintf(val_buf, sizeof(val_buf), "%.1f", dv_vals[s]);
-            renderer->drawText(label_x, sy - 0.01f, val_buf, 0.009f, 1.0f, 1.0f, 1.0f, 0.9f, true, Renderer::LEFT);
-            renderer->drawText(label_x + 0.065f, sy - 0.01f, "M/S", 0.007f, 0.5f, 0.5f, 0.6f, 0.7f, false, Renderer::LEFT);
+            if (s < 3) {
+                snprintf(val_buf, sizeof(val_buf), "%.1f", dv_vals[s]);
+                renderer->drawText(label_x, sy - 0.01f, val_buf, 0.009f, 1.0f, 1.0f, 1.0f, 0.9f, true, Renderer::LEFT);
+                renderer->drawText(label_x + 0.065f, sy - 0.01f, "M/S", 0.007f, 0.5f, 0.5f, 0.6f, 0.7f, false, Renderer::LEFT);
+            } else {
+                snprintf(val_buf, sizeof(val_buf), "SHIFT");
+                renderer->drawText(label_x, sy - 0.01f, val_buf, 0.009f, 0.6f, 1.0f, 0.6f, 0.9f, true, Renderer::LEFT);
+            }
             
             // Track background
             renderer->addRect(slider_cx, sy, slider_track_w, slider_track_h, 0.15f, 0.15f, 0.2f, 0.8f);
@@ -2973,9 +3158,17 @@ int main() {
             renderer->addRect(slider_cx, sy, 0.003f, slider_track_h * 1.5f, 0.5f, 0.5f, 0.5f, 0.7f);
             
             // Fill bar showing current value (clamped to track width)
-            float max_display_dv = 500.0f; // Max dv for full track
-            float fill_ratio = dv_vals[s] / max_display_dv;
-            fill_ratio = fmaxf(-1.0f, fminf(1.0f, fill_ratio));
+            float fill_ratio = 0.0f;
+            if (s < 3) {
+                float max_display_dv = 500.0f; // Max dv for full track
+                fill_ratio = dv_vals[s] / max_display_dv;
+                fill_ratio = fmaxf(-1.0f, fminf(1.0f, fill_ratio));
+            } else if (mnv_popup_slider_dragging == s) {
+                // visual offset for time slider when dragging
+                float raw_drag = (mouse_x - mnv_popup_slider_drag_x) / (slider_track_w / 2.0f);
+                fill_ratio = fmaxf(-1.0f, fminf(1.0f, raw_drag));
+            }
+            
             float fill_w = fabsf(fill_ratio) * slider_track_w / 2.0f;
             float fill_cx = slider_cx + (fill_ratio >= 0 ? fill_w/2 : -fill_w/2);
             if (fill_w > 0.001f) {
@@ -2993,7 +3186,7 @@ int main() {
         }
         
         // --- Separator line ---
-        float sep_y = slider_base_y - 3 * slider_spacing + 0.025f;
+        float sep_y = slider_base_y - 4 * slider_spacing + 0.025f;
         renderer->addRect(pop_x, sep_y, pw * 0.9f, 0.002f, 0.3f, 0.4f, 0.6f, 0.5f);
         
         // --- Total Delta-V ---
