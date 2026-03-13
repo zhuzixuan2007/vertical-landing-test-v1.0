@@ -2165,19 +2165,24 @@ R"(
       #version 330 core
       layout(location=0) in vec3 aPos;
       layout(location=1) in vec4 aColor;
+      layout(location=2) in float qSide; // -1 to 1
       uniform mat4 uMVP;
       out vec4 vColor;
+      out float vSide;
       void main() {
         vColor = aColor;
+        vSide = qSide;
         gl_Position = uMVP * vec4(aPos, 1.0);
       }
     )";
     const char* ribbonFragSrc = R"(
       #version 330 core
       in vec4 vColor;
+      in float vSide;
       out vec4 FragColor;
       void main() {
-        FragColor = vColor;
+        float alpha = 1.0 - smoothstep(0.7, 1.0, abs(vSide));
+        FragColor = vec4(vColor.rgb, vColor.a * alpha);
       }
     )";
     ribbonProg = compileProgram(ribbonVertSrc, ribbonFragSrc);
@@ -2187,13 +2192,15 @@ R"(
     glGenBuffers(1, &ribbonVBO);
     glBindVertexArray(ribbonVAO);
     glBindBuffer(GL_ARRAY_BUFFER, ribbonVBO);
-    glBufferData(GL_ARRAY_BUFFER, (sizeof(Vec3) + sizeof(Vec4)) * 4000, nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (sizeof(Vec3) + sizeof(Vec4) + sizeof(float)) * 4000, nullptr, GL_DYNAMIC_DRAW);
     
-    struct RibVert { Vec3 p; Vec4 c; };
+    struct RibVert { Vec3 p; Vec4 c; float side; };
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)(sizeof(Vec3)));
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)(sizeof(Vec3) + sizeof(Vec4)));
+    glEnableVertexAttribArray(2);
     glBindVertexArray(0);
 
     // --- Lens Flare Shader (Procedural 2D Screen-Space) ---
@@ -3202,7 +3209,7 @@ R"(
   void drawRibbon(const std::vector<Vec3>& points, const std::vector<Vec4>& colors, float width) {
     if (points.size() < 2 || points.size() != colors.size()) return;
 
-    struct RibVert { Vec3 p; Vec4 c; };
+    struct RibVert { Vec3 p; Vec4 c; float side; };
     std::vector<RibVert> stripVerts;
     stripVerts.reserve(points.size() * 2);
 
@@ -3229,8 +3236,8 @@ R"(
 
       float halfW = width * 0.5f;
       // Zigzag for triangle strip: first left, then right
-      stripVerts.push_back({p + right * halfW, colors[i]});
-      stripVerts.push_back({p - right * halfW, colors[i]});
+      stripVerts.push_back({p + right * halfW, colors[i], 1.0f});
+      stripVerts.push_back({p - right * halfW, colors[i], -1.0f});
     }
 
     glUseProgram(ribbonProg);
@@ -3247,6 +3254,8 @@ R"(
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)(sizeof(Vec3)));
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(RibVert), (void*)(sizeof(Vec3) + sizeof(Vec4)));
+    glEnableVertexAttribArray(2);
 
     glDepthMask(GL_FALSE);
     glEnable(GL_BLEND);

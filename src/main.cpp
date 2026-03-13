@@ -1242,8 +1242,8 @@ int main() {
               float orbit_center_dist = renderPlanet.length(); // approx dist from render origin to planet
               float cam_to_origin = camEye_rel.length();
               float ref_dist = fmaxf(cam_to_origin, orbit_center_dist);
-              float ring_w = fmaxf(earth_r * 0.002f, ref_dist * 0.0015f);
-              if (i == 4) ring_w *= 0.4f; // Moon orbit thinner
+              float ring_w = fmaxf(earth_r * 0.008f, ref_dist * 0.0035f);
+              if (i == 4) ring_w *= 0.5f; // Moon orbit thinner
               
               // Precompute trig for orbital transform
               double c_O = cos(lan), s_O = sin(lan);
@@ -1332,7 +1332,7 @@ int main() {
         
         // 渲染历史轨迹 (更亮实线: 黄绿色), 增加基于相机拉远的线宽补偿 (仅在 Panorama 显示)
         if (cam_mode_3d == 2 && traj_history.size() >= 2) {
-           float hist_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+           float hist_w = earth_r * 0.012f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
            float macro_fade = fminf(1.0f, fmaxf(0.0f, (cam_zoom_pan - 0.05f) / 0.1f));
            if (macro_fade > 0.01f) {
               std::vector<Vec3> relative_traj;
@@ -1799,7 +1799,7 @@ int main() {
             }
 
             // Draw Predicted Path
-            float ribbon_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+            float ribbon_w = earth_r * 0.008f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
             if (adv_points.size() > 1) {
                 // Original Predicted Path matches the celestial body color scheme basically matching Keplerian (Cyan/Blue)
                 r3d->drawRibbon(adv_points, ribbon_w, 0.4f, 0.8f, 1.0f, 0.85f);
@@ -1815,7 +1815,7 @@ int main() {
                 }
             }
             // Draw Ground Tracks
-            float gt_w = earth_r * 0.002f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+            float gt_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
             if (adv_ground_track.size() > 1) {
                 r3d->drawRibbon(adv_ground_track, gt_w, 0.4f, 0.8f, 1.0f, 0.6f);
             }
@@ -1943,7 +1943,7 @@ int main() {
               }
               
               // 渲染预测轨迹
-              float pred_w = earth_r * 0.004f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
+              float pred_w = earth_r * 0.012f * fmaxf(1.0f, cam_zoom_pan * 0.8f);
               float macro_fade = fminf(1.0f, fmaxf(0.0f, (cam_zoom_pan - 0.05f) / 0.1f));
               if (macro_fade > 0.01f) {
                   if (will_reenter) {
