@@ -213,90 +213,136 @@ void InitSolarSystem() {
         }
     }
     SOLAR_SYSTEM[0].soi_radius = INFINITY; // Sun has infinite SOI basically
-    
     // Execute a starting position update
     UpdateCelestialBodies(0.0);
 }
 
-void UpdateCelestialBodies(double current_time_sec) {
-    double T = current_time_sec / SECONDS_PER_JULIAN_CENTURY; // Julian centuries from epoch
-    
-    // Sun is at center
-    SOLAR_SYSTEM[0].px = 0.0; SOLAR_SYSTEM[0].py = 0.0; SOLAR_SYSTEM[0].pz = 0.0;
-    SOLAR_SYSTEM[0].vx = 0.0; SOLAR_SYSTEM[0].vy = 0.0; SOLAR_SYSTEM[0].vz = 0.0;
+void GetCelestialStateAt(int i, double current_time_sec, double& px, double& py, double& pz, double& vx, double& vy, double& vz) {
+    if (i < 0 || i >= (int)SOLAR_SYSTEM.size()) return;
+    if (i == 0) { px=0; py=0; pz=0; vx=0; vy=0; vz=0; return; }
 
-    for (size_t i = 1; i < SOLAR_SYSTEM.size(); i++) {
-        CelestialBody& b = SOLAR_SYSTEM[i];
-        
-        // Linear secular perturbation update
-        double a = b.sma_base + b.sma_rate * T;
-        double e = b.ecc_base + b.ecc_rate * T;
-        double i_inc = b.inc_base + b.inc_rate * T;
-        double lan = b.lan_base + b.lan_rate * T;
-        double arg_p = b.arg_peri_base + b.arg_peri_rate * T;
-        double M = b.mean_anom_base + b.mean_anom_rate * current_time_sec;
-        
-        // Solve Kepler's Equation for Eccentric Anomaly (E)
-        M = std::fmod(M, 2.0 * PI);
-        if (M < 0) M += 2.0 * PI;
-        double E = M;
-        for (int k = 0; k < 5; k++) {
-            double dE = (E - e * std::sin(E) - M) / (1.0 - e * std::cos(E));
-            E -= dE;
-            if (std::abs(dE) < 1e-6) break;
-        }
-        
-        // True Anomaly (nu)
-        double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E / 2.0), std::sqrt(1.0 - e) * std::cos(E / 2.0));
-        
-        // Distance
-        double r = a * (1.0 - e * std::cos(E));
-        
-        // Orbital plane coordinates
-        double o_x = r * std::cos(nu);
-        double o_y = r * std::sin(nu);
-        
-        // Orbital plane velocities
-        double mu = (i == 4) ? (G_const * SOLAR_SYSTEM[3].mass) : GM_sun; // Moon orbits Earth
-        double p = a * (1.0 - e*e); // semi-latus rectum
-        double h = std::sqrt(mu * p);
-        double o_vx = -(mu / h) * std::sin(nu);
-        double o_vy = (mu / h) * (e + std::cos(nu));
-        
-        // Transform to 3D Space (Euler angles: LAN, Inclination, Arg of Periapsis)
-        // Cos and Sin values
-        double c_O = std::cos(lan), s_O = std::sin(lan);
-        double c_w = std::cos(arg_p), s_w = std::sin(arg_p);
-        double c_i = std::cos(i_inc), s_i = std::sin(i_inc);
-        
-        // Transformation Matrix
-        double x_x = c_O * c_w - s_O * s_w * c_i;
-        double x_y = -c_O * s_w - s_O * c_w * c_i;
-        double y_x = s_O * c_w + c_O * s_w * c_i;
-        double y_y = -s_O * s_w + c_O * c_w * c_i;
-        double z_x = s_w * s_i;
-        double z_y = c_w * s_i;
-        
-        // Heliocentric Position
-        b.px = x_x * o_x + x_y * o_y;
-        b.py = y_x * o_x + y_y * o_y;
-        b.pz = z_x * o_x + z_y * o_y;
-        
-        // Heliocentric Velocity
-        b.vx = x_x * o_vx + x_y * o_vy;
-        b.vy = y_x * o_vx + y_y * o_vy;
-        b.vz = z_x * o_vx + z_y * o_vy;
-        
-        // Special Case: Moon is Geocentric in our orbital calculation, move it to Heliocentric
-        if (i == 4) { // MOON
-            b.px += SOLAR_SYSTEM[3].px;
-            b.py += SOLAR_SYSTEM[3].py;
-            b.pz += SOLAR_SYSTEM[3].pz;
-            b.vx += SOLAR_SYSTEM[3].vx;
-            b.vy += SOLAR_SYSTEM[3].vy;
-            b.vz += SOLAR_SYSTEM[3].vz;
-        }
+    const CelestialBody& b = SOLAR_SYSTEM[i];
+    double T = current_time_sec / SECONDS_PER_JULIAN_CENTURY;
+    
+    double a = b.sma_base + b.sma_rate * T;
+    double e = b.ecc_base + b.ecc_rate * T;
+    double i_inc = b.inc_base + b.inc_rate * T;
+    double lan = b.lan_base + b.lan_rate * T;
+    double arg_p = b.arg_peri_base + b.arg_peri_rate * T;
+    double M = b.mean_anom_base + b.mean_anom_rate * current_time_sec;
+    
+    M = std::fmod(M, 2.0 * PI);
+    if (M < 0) M += 2.0 * PI;
+    double E = M;
+    for (int k = 0; k < 5; k++) {
+        double dE = (E - e * std::sin(E) - M) / (1.0 - e * std::cos(E));
+        E -= dE;
+        if (std::abs(dE) < 1e-6) break;
     }
+    
+    double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E / 2.0), std::sqrt(1.0 - e) * std::cos(E / 2.0));
+    double r = a * (1.0 - e * std::cos(E));
+    double o_x = r * std::cos(nu);
+    double o_y = r * std::sin(nu);
+    
+    double mu = (i == 4) ? (G_const * SOLAR_SYSTEM[3].mass) : (G_const * SOLAR_SYSTEM[0].mass);
+    double p = a * (1.0 - e*e);
+    double h_ang = std::sqrt(mu * p);
+    double o_vx = -(mu / h_ang) * std::sin(nu);
+    double o_vy = (mu / h_ang) * (e + std::cos(nu));
+    
+    double c_O = std::cos(lan), s_O = std::sin(lan);
+    double c_w = std::cos(arg_p), s_w = std::sin(arg_p);
+    double c_i = std::cos(i_inc), s_i = std::sin(i_inc);
+    
+    double x_x = c_O * c_w - s_O * s_w * c_i;
+    double x_y = -c_O * s_w - s_O * c_w * c_i;
+    double y_x = s_O * c_w + c_O * s_w * c_i;
+    double y_y = -s_O * s_w + c_O * c_w * c_i;
+    double z_x = s_w * s_i;
+    double z_y = c_w * s_i;
+    
+    px = x_x * o_x + x_y * o_y;
+    py = y_x * o_x + y_y * o_y;
+    pz = z_x * o_x + z_y * o_y;
+    vx = x_x * o_vx + x_y * o_vy;
+    vy = y_x * o_vx + y_y * o_vy;
+    vz = z_x * o_vx + z_y * o_vy;
+    
+    if (i == 4) { // MOON special case
+        double epx, epy, epz, evx, evy, evz;
+        GetCelestialStateAt(3, current_time_sec, epx, epy, epz, evx, evy, evz);
+        px += epx; py += epy; pz += epz;
+        vx += evx; vy += evy; vz += evz;
+    }
+}
+
+void GetCelestialPositionAt(int i, double t, double& px, double& py, double& pz) {
+    double vx, vy, vz;
+    GetCelestialStateAt(i, t, px, py, pz, vx, vy, vz);
+}
+
+void UpdateCelestialBodies(double current_time_sec) {
+    for (size_t i = 0; i < SOLAR_SYSTEM.size(); i++) {
+        GetCelestialStateAt((int)i, current_time_sec, SOLAR_SYSTEM[i].px, SOLAR_SYSTEM[i].py, SOLAR_SYSTEM[i].pz, SOLAR_SYSTEM[i].vx, SOLAR_SYSTEM[i].vy, SOLAR_SYSTEM[i].vz);
+    }
+}
+
+Quat GetFrameRotation(int ref_mode, int ref_body, int sec_body, double t) {
+    if (ref_mode == 0) return Quat(1, 0, 0, 0); // Inertial
+    if (ref_mode == 2) { // Surface
+        CelestialBody& body = SOLAR_SYSTEM[ref_body];
+        double theta = body.prime_meridian_epoch + (t * 2.0 * PI / body.rotation_period);
+        return Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
+    }
+    if (ref_mode == 1) { // Co-rotating
+        if (sec_body < 0 || sec_body >= (int)SOLAR_SYSTEM.size() || sec_body == ref_body) return Quat(1, 0, 0, 0);
+        double p1x, p1y, p1z, v1x, v1y, v1z;
+        GetCelestialStateAt(ref_body, t, p1x, p1y, p1z, v1x, v1y, v1z);
+        double p2x, p2y, p2z, v2x, v2y, v2z;
+        GetCelestialStateAt(sec_body, t, p2x, p2y, p2z, v2x, v2y, v2z);
+        
+        Vec3 r_rel((float)(p2x - p1x), (float)(p2y - p1y), (float)(p2z - p1z));
+        Vec3 v_rel((float)(v2x - v1x), (float)(v2y - v1y), (float)(v2z - v1z));
+        
+        Vec3 X = r_rel.normalized();
+        Vec3 Z = r_rel.cross(v_rel).normalized(); // Orbital angular momentum normal is Z-axis by convention
+        if (Z.length() < 0.5f) Z = Vec3(0, 0, 1);
+        Vec3 Y = Z.cross(X).normalized(); // Complete orthogonal frame
+        
+        float m00 = X.x, m01 = Y.x, m02 = Z.x;
+        float m10 = X.y, m11 = Y.y, m12 = Z.y;
+        float m20 = X.z, m21 = Y.z, m22 = Z.z;
+        float tr = m00 + m11 + m22;
+        Quat q;
+        if (tr > 0) {
+            float S = std::sqrt(tr + 1.0f) * 2.0f; 
+            q.w = 0.25f * S;
+            q.x = (m21 - m12) / S;
+            q.y = (m02 - m20) / S; 
+            q.z = (m10 - m01) / S; 
+        } else if ((m00 > m11) && (m00 > m22)) {
+            float S = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f; 
+            q.w = (m21 - m12) / S;
+            q.x = 0.25f * S;
+            q.y = (m01 + m10) / S; 
+            q.z = (m02 + m20) / S; 
+        } else if (m11 > m22) {
+            float S = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f; 
+            q.w = (m02 - m20) / S;
+            q.x = (m01 + m10) / S; 
+            q.y = 0.25f * S;
+            q.z = (m12 + m21) / S; 
+        } else {
+            float S = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f; 
+            q.w = (m10 - m01) / S;
+            q.x = (m02 + m20) / S;
+            q.y = (m12 + m21) / S;
+            q.z = 0.25f * S;
+        }
+        return q;
+    }
+    return Quat(1, 0, 0, 0);
 }
 
 
