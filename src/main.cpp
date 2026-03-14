@@ -18,6 +18,7 @@
 #include "simulation/predictor.h"
 #include "simulation/stage_manager.h"
 #include "simulation/maneuver_system.h"
+#include "simulation/transfer_calculator.h"
 #include "math/spline.h"
 #include "math/chebyshev.h"  // Leaving for reference but not using for rendering
 
@@ -588,6 +589,14 @@ int main() {
     static bool adv_embed_mnv = false;    // maneuver popup embedded in adv menu
     static bool adv_embed_mnv_mini = false; // deeply folded (mini) state
     static bool mnv_popup_mini_hover = false;
+
+    // Transfer Window Calculator state
+    static bool transfer_window_menu = false;
+    static int transfer_target_body = 5;       // default Mars
+    static PorkchopResult transfer_result;
+    static bool transfer_result_valid = false;
+    static int transfer_hover_dep = -1;
+    static int transfer_hover_tof = -1;
 
     static bool space_was_pressed = true; // Start true to ignore the Builder's enter/space
     bool space_now = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
@@ -3009,7 +3018,7 @@ int main() {
 
         if (flight_assist_menu) {
             float menu_w = 0.25f;
-            float menu_h = 0.22f; // Reduced size as requested
+            float menu_h = 0.27f;
             float menu_x = adv_btn_x - adv_btn_w/2 - menu_w/2 - 0.02f;
             float menu_y = fa_btn_y;
             renderer->addRect(menu_x, menu_y, menu_w, menu_h, 0.1f, 0.05f, 0.05f, 0.85f);
@@ -3045,6 +3054,284 @@ int main() {
                 rocket_state.auto_mode = true;
                 rocket_state.mission_msg = "AUTOPILOT: INITIATING LANDING...";
             });
+
+            // Transfer Window button
+            {
+                float ty = menu_y + menu_h/2 - 0.20f;
+                bool hover = (hmouse_x >= menu_x - menu_w/2 && hmouse_x <= menu_x + menu_w/2 && hmouse_y >= ty - 0.025f && hmouse_y <= ty + 0.025f);
+                if (hover && hlmb && !hlmb_prev) {
+                    transfer_window_menu = !transfer_window_menu;
+                }
+                float btn_r = transfer_window_menu ? 0.3f : 0.15f;
+                float btn_g = transfer_window_menu ? 0.5f : 0.15f;
+                float btn_b = transfer_window_menu ? 0.8f : 0.15f;
+                if (hover) { btn_r += 0.1f; btn_g += 0.1f; btn_b += 0.1f; }
+                renderer->addRect(menu_x, ty, menu_w * 0.9f, 0.04f, btn_r, btn_g, btn_b, 0.8f);
+                renderer->drawText(menu_x - menu_w * 0.4f, ty, "TRANSFER WINDOW", 0.011f, 0.3f, 0.8f, 1.0f, 0.9f, true, Renderer::LEFT);
+                renderer->drawText(menu_x + menu_w * 0.35f, ty, transfer_window_menu ? "[v]" : "[>]", 0.011f, 0.6f, 0.8f, 1.0f, 0.9f, true, Renderer::CENTER);
+            }
+        }
+
+        // === Transfer Window Popup Panel ===
+        if (transfer_window_menu && flight_assist_menu) {
+            float tw_w = 0.55f;
+            float tw_h = 0.60f;
+            float tw_x = adv_btn_x - adv_btn_w/2 - 0.25f - tw_w/2 - 0.04f;
+            float tw_y = fa_btn_y - 0.05f;
+
+            // Background panel
+            renderer->addRect(tw_x, tw_y, tw_w, tw_h, 0.04f, 0.04f, 0.08f, 0.92f);
+            renderer->addRectOutline(tw_x, tw_y, tw_w, tw_h, 0.3f, 0.6f, 1.0f, 0.9f);
+            renderer->addRect(tw_x, tw_y + tw_h*0.42f, tw_w, tw_h*0.16f, 0.06f, 0.06f, 0.14f, 0.3f);
+
+            // Title
+            float title_y = tw_y + tw_h/2 - 0.02f;
+            renderer->drawText(tw_x, title_y, "TRANSFER WINDOW CALCULATOR", 0.013f, 0.4f, 0.8f, 1.0f, 1.0f, true, Renderer::CENTER);
+
+            // --- Target Body Selector ---
+            float sel_y = title_y - 0.04f;
+            renderer->drawText(tw_x - tw_w*0.4f, sel_y, "Target:", 0.011f, 0.8f, 0.8f, 0.8f, 1.0f, true, Renderer::LEFT);
+
+            // Left arrow
+            float arr_lx = tw_x - 0.02f;
+            bool hover_tgt_l = (hmouse_x >= arr_lx - 0.015f && hmouse_x <= arr_lx + 0.015f && hmouse_y >= sel_y - 0.015f && hmouse_y <= sel_y + 0.015f);
+            renderer->drawText(arr_lx, sel_y, "<", 0.014f, 1,1,1, hover_tgt_l ? 1.0f : 0.5f, true, Renderer::CENTER);
+            if (hover_tgt_l && hlmb && !hlmb_prev) {
+                int origin = TransferCalculator::getTransferOriginBody();
+                do { transfer_target_body--; if (transfer_target_body < 1) transfer_target_body = (int)SOLAR_SYSTEM.size()-1; }
+                while (transfer_target_body == origin || transfer_target_body == 4 || transfer_target_body == 0);
+                transfer_result_valid = false;
+            }
+
+            // Body name
+            if (transfer_target_body >= 0 && transfer_target_body < (int)SOLAR_SYSTEM.size())
+                renderer->drawText(tw_x + 0.06f, sel_y, SOLAR_SYSTEM[transfer_target_body].name.c_str(), 0.012f, 1.0f, 0.9f, 0.3f, 1.0f, true, Renderer::CENTER);
+
+            // Right arrow
+            float arr_rx = tw_x + 0.14f;
+            bool hover_tgt_r = (hmouse_x >= arr_rx - 0.015f && hmouse_x <= arr_rx + 0.015f && hmouse_y >= sel_y - 0.015f && hmouse_y <= sel_y + 0.015f);
+            renderer->drawText(arr_rx, sel_y, ">", 0.014f, 1,1,1, hover_tgt_r ? 1.0f : 0.5f, true, Renderer::CENTER);
+            if (hover_tgt_r && hlmb && !hlmb_prev) {
+                int origin = TransferCalculator::getTransferOriginBody();
+                do { transfer_target_body++; if (transfer_target_body >= (int)SOLAR_SYSTEM.size()) transfer_target_body = 1; }
+                while (transfer_target_body == origin || transfer_target_body == 4 || transfer_target_body == 0);
+                transfer_result_valid = false;
+            }
+
+            // --- CALCULATE Button ---
+            float calc_y = sel_y - 0.045f;
+            float calc_w = tw_w * 0.45f;
+            float calc_h = 0.035f;
+            bool hover_calc = (hmouse_x >= tw_x - calc_w/2 && hmouse_x <= tw_x + calc_w/2 && hmouse_y >= calc_y - calc_h/2 && hmouse_y <= calc_y + calc_h/2);
+            renderer->addRect(tw_x, calc_y, calc_w, calc_h, hover_calc ? 0.2f : 0.1f, hover_calc ? 0.6f : 0.4f, hover_calc ? 1.0f : 0.8f, 0.9f);
+            renderer->addRectOutline(tw_x, calc_y, calc_w, calc_h, 0.3f, 0.7f, 1.0f, 0.8f);
+            renderer->drawText(tw_x, calc_y, "CALCULATE", 0.012f, 1,1,1, 1.0f, true, Renderer::CENTER);
+
+            if (hover_calc && hlmb && !hlmb_prev) {
+                int origin = TransferCalculator::getTransferOriginBody();
+                transfer_result = TransferCalculator::computePorkchop(origin, transfer_target_body, rocket_state.sim_time, 40);
+                transfer_result_valid = transfer_result.computed;
+                transfer_hover_dep = -1;
+                transfer_hover_tof = -1;
+            }
+
+            // --- Porkchop Plot ---
+            if (transfer_result_valid && transfer_result.computed) {
+                float plot_lx = tw_x - tw_w * 0.38f;  // left edge
+                float plot_rx = tw_x + tw_w * 0.38f;  // right edge
+                float plot_ty = calc_y - 0.04f;        // top (below calc button)
+                float plot_by = tw_y - tw_h/2 + 0.08f; // bottom (above info area)
+                float plot_w = plot_rx - plot_lx;
+                float plot_h = plot_ty - plot_by;
+
+                // Axis labels
+                renderer->drawText(tw_x, plot_ty + 0.015f, "Departure (days from now) ->", 0.008f, 0.6f, 0.6f, 0.6f, 0.8f, true, Renderer::CENTER);
+                // Y-axis label (rotated text not available, use short label)
+                renderer->drawText(plot_lx - 0.02f, (plot_ty + plot_by)/2, "TOF", 0.008f, 0.6f, 0.6f, 0.6f, 0.8f, true, Renderer::CENTER);
+
+                // Compute Δv range for color mapping
+                double dv_min_plot = transfer_result.min_dv;
+                double dv_max_plot = dv_min_plot * 5.0; // clamp upper range
+                if (dv_max_plot < dv_min_plot + 1000.0) dv_max_plot = dv_min_plot + 1000.0;
+
+                int gn = transfer_result.n_dep;
+                float cell_w = plot_w / gn;
+                float cell_h = plot_h / gn;
+
+                transfer_hover_dep = -1;
+                transfer_hover_tof = -1;
+
+                for (int gi = 0; gi < gn; gi++) {
+                    for (int gj = 0; gj < gn; gj++) {
+                        int idx = gi * gn + gj;
+                        const PorkchopPoint& pt = transfer_result.grid[idx];
+
+                        float cx = plot_lx + (gi + 0.5f) * cell_w;
+                        float cy = plot_by + (gj + 0.5f) * cell_h;
+
+                        // Check hover
+                        bool cell_hover = (hmouse_x >= cx - cell_w/2 && hmouse_x <= cx + cell_w/2 &&
+                                          hmouse_y >= cy - cell_h/2 && hmouse_y <= cy + cell_h/2);
+                        if (cell_hover) { transfer_hover_dep = gi; transfer_hover_tof = gj; }
+
+                        if (!pt.valid) {
+                            renderer->addRect(cx, cy, cell_w * 0.95f, cell_h * 0.95f, 0.08f, 0.08f, 0.08f, 0.6f);
+                            continue;
+                        }
+
+                        // Color mapping: green (low Δv) -> yellow -> red (high Δv)
+                        float t = (float)((pt.dv_total - dv_min_plot) / (dv_max_plot - dv_min_plot));
+                        t = fmaxf(0.0f, fminf(1.0f, t));
+
+                        float cr, cg, cb;
+                        if (t < 0.5f) {
+                            float s = t * 2.0f;
+                            cr = s; cg = 1.0f; cb = 0.0f; // green -> yellow
+                        } else {
+                            float s = (t - 0.5f) * 2.0f;
+                            cr = 1.0f; cg = 1.0f - s; cb = 0.0f; // yellow -> red
+                        }
+
+                        float alpha = cell_hover ? 1.0f : 0.85f;
+                        renderer->addRect(cx, cy, cell_w * 0.95f, cell_h * 0.95f, cr, cg, cb, alpha);
+                    }
+                }
+
+                // Mark minimum Δv cell with white crosshair
+                if (transfer_result.min_dv_index >= 0) {
+                    int mi = transfer_result.min_dv_index / gn;
+                    int mj = transfer_result.min_dv_index % gn;
+                    float mx = plot_lx + (mi + 0.5f) * cell_w;
+                    float my = plot_by + (mj + 0.5f) * cell_h;
+                    renderer->addRectOutline(mx, my, cell_w * 1.3f, cell_h * 1.3f, 1.0f, 1.0f, 1.0f, 1.0f, 0.003f);
+                    renderer->addLine(mx - cell_w, my, mx + cell_w, my, 0.002f, 1.0f, 1.0f, 1.0f, 0.8f);
+                    renderer->addLine(mx, my - cell_h, mx, my + cell_h, 0.002f, 1.0f, 1.0f, 1.0f, 0.8f);
+                }
+
+                // Axis tick labels (departure days)
+                for (int ti = 0; ti <= 4; ti++) {
+                    float fx = (float)ti / 4.0f;
+                    double dep_day = (transfer_result.dep_start + fx * (transfer_result.dep_end - transfer_result.dep_start) - rocket_state.sim_time) / 86400.0;
+                    char tick[32]; snprintf(tick, sizeof(tick), "%.0f", dep_day);
+                    renderer->drawText(plot_lx + fx * plot_w, plot_by - 0.015f, tick, 0.007f, 0.5f, 0.5f, 0.5f, 0.8f, true, Renderer::CENTER);
+                }
+                // Axis tick labels (TOF days)
+                for (int ti = 0; ti <= 4; ti++) {
+                    float fy = (float)ti / 4.0f;
+                    double tof_day = (transfer_result.tof_min + fy * (transfer_result.tof_max - transfer_result.tof_min)) / 86400.0;
+                    char tick[32]; snprintf(tick, sizeof(tick), "%.0fd", tof_day);
+                    renderer->drawText(plot_lx - 0.03f, plot_by + fy * plot_h, tick, 0.007f, 0.5f, 0.5f, 0.5f, 0.8f, true, Renderer::CENTER);
+                }
+
+                // --- Info Display ---
+                float info_y = plot_by - 0.035f;
+                float info_lx = tw_x - tw_w * 0.4f;
+
+                // Show minimum Δv info
+                if (transfer_result.min_dv_index >= 0) {
+                    const PorkchopPoint& best = transfer_result.grid[transfer_result.min_dv_index];
+                    char buf[128];
+                    snprintf(buf, sizeof(buf), "MIN Dv: %.2f km/s  (Dep: %.1f  Arr: %.1f)", 
+                             best.dv_total / 1000.0, best.dv_departure / 1000.0, best.dv_arrival / 1000.0);
+                    renderer->drawText(info_lx, info_y, buf, 0.009f, 0.2f, 1.0f, 0.4f, 1.0f, true, Renderer::LEFT);
+
+                    double dep_days = (best.departure_time - rocket_state.sim_time) / 86400.0;
+                    double tof_days = best.tof / 86400.0;
+                    snprintf(buf, sizeof(buf), "Depart: T+%.1f days | Travel: %.1f days", dep_days, tof_days);
+                    renderer->drawText(info_lx, info_y - 0.018f, buf, 0.008f, 0.7f, 0.7f, 0.7f, 0.9f, true, Renderer::LEFT);
+                }
+
+                // Hover tooltip
+                if (transfer_hover_dep >= 0 && transfer_hover_tof >= 0) {
+                    int hidx = transfer_hover_dep * gn + transfer_hover_tof;
+                    if (hidx >= 0 && hidx < (int)transfer_result.grid.size()) {
+                        const PorkchopPoint& hpt = transfer_result.grid[hidx];
+                        if (hpt.valid) {
+                            float tt_x = hmouse_x + 0.05f;
+                            float tt_y = hmouse_y + 0.03f;
+                            float tt_w = 0.22f;
+                            float tt_h = 0.06f;
+                            renderer->addRect(tt_x, tt_y, tt_w, tt_h, 0.05f, 0.05f, 0.1f, 0.95f);
+                            renderer->addRectOutline(tt_x, tt_y, tt_w, tt_h, 0.4f, 0.7f, 1.0f, 0.9f);
+                            char tb[64];
+                            snprintf(tb, sizeof(tb), "Dv: %.2f km/s", hpt.dv_total / 1000.0);
+                            renderer->drawText(tt_x, tt_y + 0.012f, tb, 0.009f, 1,1,1, 1.0f, true, Renderer::CENTER);
+                            double d_day = (hpt.departure_time - rocket_state.sim_time) / 86400.0;
+                            double t_day = hpt.tof / 86400.0;
+                            snprintf(tb, sizeof(tb), "T+%.0fd / %.0fd flight", d_day, t_day);
+                            renderer->drawText(tt_x, tt_y - 0.012f, tb, 0.008f, 0.7f, 0.7f, 0.7f, 1.0f, true, Renderer::CENTER);
+                        }
+                    }
+                }
+
+                // --- CREATE MANEUVER NODE Button ---
+                float cmn_y = tw_y - tw_h/2 + 0.025f;
+                float cmn_w = tw_w * 0.55f;
+                float cmn_h = 0.035f;
+                bool hover_cmn = (transfer_result.min_dv_index >= 0) &&
+                    (hmouse_x >= tw_x - cmn_w/2 && hmouse_x <= tw_x + cmn_w/2 &&
+                     hmouse_y >= cmn_y - cmn_h/2 && hmouse_y <= cmn_y + cmn_h/2);
+                float cmn_r = transfer_result.min_dv_index >= 0 ? 0.2f : 0.15f;
+                float cmn_g = transfer_result.min_dv_index >= 0 ? 0.8f : 0.3f;
+                float cmn_b = transfer_result.min_dv_index >= 0 ? 0.4f : 0.3f;
+                if (hover_cmn) { cmn_r += 0.1f; cmn_g += 0.1f; cmn_b += 0.1f; }
+                renderer->addRect(tw_x, cmn_y, cmn_w, cmn_h, cmn_r * 0.3f, cmn_g * 0.3f, cmn_b * 0.3f, 0.8f);
+                renderer->addRectOutline(tw_x, cmn_y, cmn_w, cmn_h, cmn_r, cmn_g, cmn_b, 0.9f);
+                renderer->drawText(tw_x, cmn_y, "CREATE MANEUVER NODE", 0.010f, cmn_r, cmn_g, cmn_b, 1.0f, true, Renderer::CENTER);
+
+                if (hover_cmn && hlmb && !hlmb_prev && transfer_result.min_dv_index >= 0) {
+                    const PorkchopPoint& best = transfer_result.grid[transfer_result.min_dv_index];
+
+                    // Create maneuver node at optimal departure time
+                    ManeuverNode node;
+                    node.sim_time = best.departure_time;
+                    node.active = true;
+                    node.ref_body = current_soi_index;
+
+                    // Convert heliocentric Δv to prograde/normal/radial frame
+                    // Get rocket state projected to departure time
+                    double mu_soi = G_const * SOLAR_SYSTEM[current_soi_index].mass;
+                    double npx, npy, npz, nvx, nvy, nvz;
+                    get3DStateAtTime(rocket_state.px, rocket_state.py, rocket_state.pz,
+                                    rocket_state.vx, rocket_state.vy, rocket_state.vz,
+                                    mu_soi, best.departure_time - rocket_state.sim_time,
+                                    npx, npy, npz, nvx, nvy, nvz);
+
+                    ManeuverFrame frame = ManeuverSystem::getFrame(
+                        Vec3((float)npx, (float)npy, (float)npz),
+                        Vec3((float)nvx, (float)nvy, (float)nvz));
+
+                    // The departure Δv vector is in heliocentric frame.
+                    // For the maneuver node, we need it in the local orbital frame relative to SOI body.
+                    // Approximate: project the heliocentric dv into prograde/normal/radial
+                    Vec3 dv_world = best.departure_dv_vec;
+                    float pro_comp = dv_world.dot(frame.prograde);
+                    float nrm_comp = dv_world.dot(frame.normal);
+                    float rad_comp = dv_world.dot(frame.radial);
+                    node.delta_v = Vec3(pro_comp, nrm_comp, rad_comp);
+
+                    rocket_state.maneuvers.clear();
+                    rocket_state.maneuvers.push_back(node);
+                    rocket_state.selected_maneuver_index = 0;
+                    global_best_ang = 0;
+                    mnv_popup_index = 0;
+                    mnv_popup_visible = true;
+                    adv_embed_mnv = true;
+
+                    rocket_state.mission_msg = "TRANSFER NODE CREATED";
+                    cout << ">> Transfer maneuver created: dv=" << best.dv_total/1000.0 << " km/s" << endl;
+                }
+            } else {
+                // No result yet - show instructions
+                renderer->drawText(tw_x, tw_y - 0.03f, "Select target planet and press CALCULATE", 0.009f, 0.5f, 0.5f, 0.5f, 0.8f, true, Renderer::CENTER);
+                renderer->drawText(tw_x, tw_y - 0.06f, "to generate porkchop plot.", 0.009f, 0.5f, 0.5f, 0.5f, 0.8f, true, Renderer::CENTER);
+
+                // Origin info
+                int origin = TransferCalculator::getTransferOriginBody();
+                char orig_buf[64];
+                snprintf(orig_buf, sizeof(orig_buf), "Origin: %s", SOLAR_SYSTEM[origin].name.c_str());
+                renderer->drawText(tw_x, tw_y - 0.12f, orig_buf, 0.010f, 0.4f, 0.7f, 0.9f, 0.8f, true, Renderer::CENTER);
+            }
         }
         if (adv_orbit_menu) {
             float menu_w = 0.30f;
