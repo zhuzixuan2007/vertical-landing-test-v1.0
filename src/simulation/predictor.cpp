@@ -84,6 +84,27 @@ void AsyncOrbitPredictor::WorkerLoop() {
             }
         }
 
+        bool has_mnv = !req.state.maneuvers.empty();
+        
+        bool preserve_mnv = false;
+        double trigger_t = has_mnv ? req.state.maneuvers[0].sim_time : -1.0;
+        
+        if (has_mnv && reset_needed && m_context.last_ref_body == req.ref_body) {
+            if (m_context.last_maneuvers.size() == req.state.maneuvers.size()) {
+                auto& curr_m = req.state.maneuvers[0];
+                auto& last_m = m_context.last_maneuvers[0];
+                if (std::abs(curr_m.sim_time - last_m.sim_time) < 1.0 &&
+                    std::abs(curr_m.delta_v.x - last_m.delta_v.x) < 0.1 &&
+                    std::abs(curr_m.delta_v.y - last_m.delta_v.y) < 0.1 &&
+                    std::abs(curr_m.delta_v.z - last_m.delta_v.z) < 0.1) {
+                    
+                    if (t_start > trigger_t - 300.0) {
+                        preserve_mnv = true;
+                    }
+                }
+            }
+        }
+
         if (reset_needed) {
             m_context.t_epoch = t_start;
             m_context.t_last = t_start;
@@ -92,9 +113,13 @@ void AsyncOrbitPredictor::WorkerLoop() {
             m_context.px = req.state.abs_px; m_context.py = req.state.abs_py; m_context.pz = req.state.abs_pz;
             m_context.vx = req.state.abs_vx; m_context.vy = req.state.abs_vy; m_context.vz = req.state.abs_vz;
             m_context.points.clear();
-            m_context.mnv_points.clear();
-            m_context.mnv_done = false;
+            
+            if (!preserve_mnv) {
+                m_context.mnv_points.clear();
+                m_context.mnv_done = false;
+            }
             m_context.last_maneuvers = req.state.maneuvers;
+            m_context.last_ref_body = req.ref_body;
         }
 
         // Integration Constants
@@ -112,8 +137,10 @@ void AsyncOrbitPredictor::WorkerLoop() {
         double mnv_h_px = m_context.mnv_px, mnv_h_py = m_context.mnv_py, mnv_h_pz = m_context.mnv_pz;
         double mnv_h_vx = m_context.mnv_vx, mnv_h_vy = m_context.mnv_vy, mnv_h_vz = m_context.mnv_vz;
 
-        bool has_mnv = !req.state.maneuvers.empty();
-        double trigger_t = has_mnv ? req.state.maneuvers[0].sim_time : -1.0;
+        bool loop_has_mnv = has_mnv;
+        if (preserve_mnv) {
+            loop_has_mnv = false; // Disable new maneuver line generation to preserve the target orbit
+        }
         
         auto calc_acc = [&](double t, double x, double y, double z, double& ax, double& ay, double& az) {
             ax = 0; ay = 0; az = 0;
@@ -152,7 +179,7 @@ void AsyncOrbitPredictor::WorkerLoop() {
             double step_dt = 0.1 * std::sqrt(min_dist_sq / std::max(v_sq, 1.0));
             step_dt = std::clamp(step_dt, 5.0, 14400.0);
 
-            if (has_mnv && !m_context.mnv_done) {
+            if (loop_has_mnv && !m_context.mnv_done) {
                 if (t_sim < trigger_t && t_sim + step_dt > trigger_t) {
                     step_dt = trigger_t - t_sim;
                 }
@@ -167,7 +194,7 @@ void AsyncOrbitPredictor::WorkerLoop() {
             }
 
             // Maneuver
-            if (has_mnv && !m_context.mnv_done && t_sim >= trigger_t - 1e-4) {
+            if (loop_has_mnv && !m_context.mnv_done && t_sim >= trigger_t - 1e-4) {
                 double bpx, bpy, bpz, bvx, bvy, bvz;
                 PhysicsSystem::GetCelestialStateAt(nearest_body, t_sim, bpx, bpy, bpz, bvx, bvy, bvz);
                 Vec3 r_rel((float)(cur_h_px - bpx), (float)(cur_h_py - bpy), (float)(cur_h_pz - bpz));
@@ -197,7 +224,7 @@ void AsyncOrbitPredictor::WorkerLoop() {
             #undef SYM_W_P
 
             // Recording
-            if (t_sim >= last_record_t + record_interval || (has_mnv && std::abs(t_sim - trigger_t) < 1e-4)) {
+            if (t_sim >= last_record_t + record_interval || (loop_has_mnv && std::abs(t_sim - trigger_t) < 1e-4)) {
                 double rbpx, rbpy, rbpz;
                 PhysicsSystem::GetCelestialPositionAt(req.ref_body, t_sim, rbpx, rbpy, rbpz);
                 

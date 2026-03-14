@@ -46,6 +46,7 @@ private:
         std::vector<Vec3> mnv_points;
         bool mnv_done = false;
         std::vector<ManeuverNode> last_maneuvers;
+        int last_ref_body = -1;
         
         // Initial state at t_epoch for continuity checks
         double init_px, init_py, init_pz;
