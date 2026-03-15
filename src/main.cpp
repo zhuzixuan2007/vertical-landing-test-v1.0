@@ -2362,34 +2362,30 @@ int main() {
                 ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
                 Vec3 target_dv_world = (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z);
                 node.locked_burn_dir = target_dv_world.normalized();
+                
+                // Absolute state snapshot (for prediction)
                 node.snap_px = rbpx + npx;
                 node.snap_py = rbpy + npy;
                 node.snap_pz = rbpz + npz;
                 node.snap_vx = rbvx + nvx + target_dv_world.x;
                 node.snap_vy = rbvy + nvy + target_dv_world.y;
                 node.snap_vz = rbvz + nvz + target_dv_world.z;
+                
+                // Relative state snapshot (for guidance stability) - Principia Style
+                node.snap_rel_px = npx;
+                node.snap_rel_py = npy;
+                node.snap_rel_pz = npz;
+                node.snap_rel_vx = nvx + target_dv_world.x;
+                node.snap_rel_vy = nvy + target_dv_world.y;
+                node.snap_rel_vz = nvz + target_dv_world.z;
+                
                 node.snap_time = node.sim_time;
                 node.snap_valid = true;
             }
             
             if (node.snap_valid) {
-                int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
-                CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
-                
-                double cur_rel_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
-                double cur_rel_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
-                double cur_rel_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
-                
-                double mu_ref = G_const * ref_b.mass;
-                double dt_snap = rocket_state.sim_time - node.snap_time;
-                double tpx, tpy, tpz, tvx, tvy, tvz;
-                get3DStateAtTime(node.snap_px - ref_b.px, node.snap_py - ref_b.py, node.snap_pz - ref_b.pz,
-                                 node.snap_vx - ref_b.vx, node.snap_vy - ref_b.vy, node.snap_vz - ref_b.vz,
-                                 mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
-                
-                Vec3 rem_v((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
+                Vec3 rem_v = ManeuverSystem::calculateRemainingDV(rocket_state, node);
                 remaining_dv = (float)rem_v.length();
-                
                 if (remaining_dv < 0.1f) remaining_dv = 0.0f;
             }
             
@@ -3141,22 +3137,7 @@ int main() {
         
         if (node.snap_valid) {
             // High-Precision Target Orbit Tracking (Principia Style)
-            int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
-            CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
-            
-            double cur_rel_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
-            double cur_rel_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
-            double cur_rel_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
-            
-            double mu_ref = G_const * ref_b.mass;
-            double dt_snap = rocket_state.sim_time - node.snap_time;
-            double tpx, tpy, tpz, tvx, tvy, tvz;
-            get3DStateAtTime(node.snap_px - ref_b.px, node.snap_py - ref_b.py, node.snap_pz - ref_b.pz,
-                             node.snap_vx - ref_b.vx, node.snap_vy - ref_b.vy, node.snap_vz - ref_b.vz,
-                             mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
-            
-            Vec3 rem_v((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
-            
+            Vec3 rem_v = ManeuverSystem::calculateRemainingDV(rocket_state, node);
             dv_remaining = (double)rem_v.length();
             vManeuver = rem_v.normalized();
         } else {

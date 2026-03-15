@@ -69,4 +69,34 @@ public:
             default: return Vec3(0, 0, 0);
         }
     }
+
+    // High-Precision Remaining Delta-V calculation (Shared by HUD and Autopilot)
+    static Vec3 calculateRemainingDV(const RocketState& state, const ManeuverNode& node) {
+        if (!node.snap_valid) return Vec3(0, 0, 0);
+
+        int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+        const CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
+        
+        // Current relative velocity in the reference body's frame
+        // abs_v = rocket_rel_v + soi_v
+        // target_rel_v = abs_v - ref_b_v
+        double cur_rel_vx = state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
+        double cur_rel_vy = state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
+        double cur_rel_vz = state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
+        
+        double mu_ref = 6.67430e-11 * ref_b.mass;
+        double dt_snap = state.sim_time - node.snap_time;
+        double tpx, tpy, tpz, tvx, tvy, tvz;
+        
+        // Use Keplerian propagation to project the target state to the current time
+        // This prevents "DV inflation" caused by just subtracting static vectors
+        void get3DStateAtTime(double px, double py, double pz, double vx, double vy, double vz, double mu, double dt,
+                              double& out_px, double& out_py, double& out_pz, double& out_vx, double& out_vy, double& out_vz);
+
+        get3DStateAtTime(node.snap_rel_px, node.snap_rel_py, node.snap_rel_pz,
+                         node.snap_rel_vx, node.snap_rel_vy, node.snap_rel_vz,
+                         mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
+        
+        return Vec3((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
+    }
 };

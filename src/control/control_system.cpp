@@ -217,11 +217,8 @@ void UpdateManualControl(RocketState& state, const RocketConfig& config, Control
                         double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
                         
                         // If we are close to or during the burn, steer towards the remaining delta-v vector (more stable)
-                        if (dt_node < 5.0 && node.snap_valid) {
-                           double cur_abs_vx = state.vx + SOLAR_SYSTEM[current_soi_index].vx;
-                           double cur_abs_vy = state.vy + SOLAR_SYSTEM[current_soi_index].vy;
-                           double cur_abs_vz = state.vz + SOLAR_SYSTEM[current_soi_index].vz;
-                           Vec3 rem_v((float)(node.snap_vx - cur_abs_vx), (float)(node.snap_vy - cur_abs_vy), (float)(node.snap_vz - cur_abs_vz));
+                        if (node.snap_valid) {
+                           Vec3 rem_v = ManeuverSystem::calculateRemainingDV(state, node);
                            if (rem_v.length() > 0.01f) state.sas_target_vec = rem_v.normalized();
                            else state.sas_target_vec = Vec3(0,0,0);
                         } else {

@@ -149,6 +149,11 @@ struct ManeuverNode {
     // Snapshot of absolute state at node creation/update for stable post-burn orbit prediction
     double snap_px=0, snap_py=0, snap_pz=0; // absolute position at node completion
     double snap_vx=0, snap_vy=0, snap_vz=0; // absolute velocity at node completion
+    
+    // Relative state snapshots (Principia style) for dynamic guidance stability
+    double snap_rel_px=0, snap_rel_py=0, snap_rel_pz=0; // relative to ref_body
+    double snap_rel_vx=0, snap_rel_vy=0, snap_rel_vz=0; // relative to ref_body
+    
     double snap_time = -1.0;                // simulation time of completion
     bool snap_valid = false;                 // whether snapshot is populated
 };
