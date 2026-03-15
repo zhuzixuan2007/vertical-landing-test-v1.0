@@ -165,14 +165,19 @@ struct RocketAssembly {
     SnapResult findBestSnapNode(int d_id, Vec3 rayPos, Vec3 rayDir) const {
         SnapResult best; const PartDef& dDef = PART_CATALOG[d_id];
         for (int i = 0; i < (int)parts.size(); i++) {
-            const PartDef& pDef = PART_CATALOG[parts[i].def_id];
+            const auto& pPart = parts[i];
+            const PartDef& pDef = PART_CATALOG[pPart.def_id];
             for (int pn = 0; pn < (int)pDef.snap_nodes.size(); pn++) {
-                Vec3 wPos = parts[i].pos + pDef.snap_nodes[pn].pos;
+                // Account for parent rotation
+                Vec3 nodeLocal = pDef.snap_nodes[pn].pos;
+                Vec3 nodeWorld = pPart.rot.rotate(nodeLocal);
+                Vec3 wPos = pPart.pos + nodeWorld;
+                
                 float d = (wPos - rayPos).length();
                 for (int cn = 0; cn < (int)dDef.snap_nodes.size(); cn++) {
                     if (d < 5.0f && d < best.score) {
                         best.score = d; best.parent_idx = i; best.p_node = pn; best.c_node = cn;
-                        best.pos = wPos - dDef.snap_nodes[cn].pos;
+                        best.pos = wPos - dDef.snap_nodes[cn].pos; 
                     }
                 }
             }
@@ -547,6 +552,8 @@ inline bool builderHandleInput(BuilderState& bs, const BuilderKeyState& k, const
             bs.dragging_pos = snap.pos; 
             bs.dragging_parent_idx = snap.parent_idx; 
             bs.is_placement_valid = true;
+            // Snapped parts inherit parent rotation + manual shift
+            bs.dragging_rot = bs.assembly.parts[snap.parent_idx].rot * bs.placement_manual_rot;
         } else if (surf.parent_idx != -1 && surf.score < 2.0f) {
             bs.dragging_pos = surf.pos;
             bs.dragging_parent_idx = surf.parent_idx;
@@ -554,11 +561,12 @@ inline bool builderHandleInput(BuilderState& bs, const BuilderKeyState& k, const
             
             // Outward rotation for surface attachment
             Vec3 normal = (surf.pos - bs.assembly.parts[surf.parent_idx].pos); normal.y = 0;
+            Quat surf_rot = Quat();
             if (normal.length() > 0.01f) {
                 float angle = atan2(normal.z, normal.x);
-                bs.dragging_rot = Quat::fromAxisAngle(Vec3(0, 1, 0), -angle + (float)PI/2.0f);
+                surf_rot = Quat::fromAxisAngle(Vec3(0, 1, 0), -angle + (float)PI/2.0f);
             }
-            bs.dragging_rot = bs.dragging_rot * bs.placement_manual_rot;
+            bs.dragging_rot = surf_rot * bs.placement_manual_rot;
         } else { 
             if (bs.assembly.parts.empty()) {
                 bs.dragging_pos = Vec3(0, 0, 0); // Snap first part to origin

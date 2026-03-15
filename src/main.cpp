@@ -515,14 +515,15 @@ int main() {
 
             if (def.category == CAT_NOSE_CONE) {
                 // Nosecones are typically base-centered and point up
-                Mat4 partMat = Mat4::translate(symPos) * Mat4::scale({pd, def.height, pd});
+                Mat4 partMat = Mat4::translate(symPos) * Mat4::fromQuat(rot) * Mat4::scale({pd, def.height, pd});
                 r3d->drawMesh(rocketNose, partMat, r, g, b, alpha, 0.2f);
             } else if (def.category == CAT_ENGINE) {
                 // Engine: Body top + Nozzle bell bottom
                 float bf = 0.4f; float nf = 1.0f - bf;
-                Mat4 bodyMat = Mat4::translate(symPos + Vec3(0, def.height*(1.0f-bf*0.5f), 0)) * Mat4::scale({pd*0.6f, def.height*bf, pd*0.6f});
+                Mat4 rotMat = Mat4::fromQuat(rot);
+                Mat4 bodyMat = Mat4::translate(symPos) * rotMat * Mat4::translate(Vec3(0, def.height*(1.0f-bf*0.5f), 0)) * Mat4::scale({pd*0.6f, def.height*bf, pd*0.6f});
                 r3d->drawMesh(rocketBody, bodyMat, 0.2f*rm, 0.2f*gm, 0.22f*bm, alpha, 0.4f);
-                Mat4 bellMat = Mat4::translate(symPos) * Mat4::scale({pd*0.85f, def.height*nf, pd*0.85f});
+                Mat4 bellMat = Mat4::translate(symPos) * rotMat * Mat4::scale({pd*0.85f, def.height*nf, pd*0.85f});
                 r3d->drawMesh(rocketNose, bellMat, r*0.8f, g*0.8f, b*0.8f, alpha, 0.1f);
             } else if (def.category == CAT_STRUCTURAL) {
                 if (strstr(def.name, "Fin") || strstr(def.name, "Solar")) {
@@ -534,12 +535,12 @@ int main() {
                     Mat4 legMat = Mat4::translate(symPos + Vec3(0, def.height*0.5f, 0)) * Mat4::fromQuat(Quat::fromAxisAngle(Vec3(0, 1, 0), angle)) * Mat4::scale({pd*0.15f, def.height, pd*0.15f});
                     r3d->drawMesh(rocketBox, legMat, r, g, b, alpha, 0.1f);
                 } else {
-                    Mat4 partMat = Mat4::translate(Vec3(symPos.x, py, symPos.z)) * Mat4::scale({pd, def.height, pd});
+                    Mat4 partMat = Mat4::translate(symPos) * Mat4::fromQuat(rot) * Mat4::translate(Vec3(0, def.height*0.5f, 0)) * Mat4::scale({pd, def.height, pd});
                     r3d->drawMesh(rocketBody, partMat, r, g, b, alpha, 0.2f);
                 }
             } else {
                 // Default: Standard cylinder (Tanks, Boosters, etc.)
-                Mat4 partMat = Mat4::translate(Vec3(symPos.x, py, symPos.z)) * Mat4::scale({pd, def.height, pd});
+                Mat4 partMat = Mat4::translate(symPos) * Mat4::fromQuat(rot) * Mat4::translate(Vec3(0, def.height*0.5f, 0)) * Mat4::scale({pd, def.height, pd});
                 r3d->drawMesh(rocketBody, partMat, r, g, b, alpha, 0.2f);
             }
         }
