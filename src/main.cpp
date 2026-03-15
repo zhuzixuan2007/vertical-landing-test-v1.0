@@ -361,7 +361,7 @@ int main() {
   
   bool build_done = skip_builder;
 
-  BuilderKeyState bk_prev = {false,false,false,false,false,false,false,false,false,false};
+  BuilderKeyState bk_prev = {};
 
   while (!build_done && !glfwWindowShouldClose(window)) {
     glfwPollEvents();
@@ -380,6 +380,12 @@ int main() {
     bk_now.pgup  = glfwGetKey(window, GLFW_KEY_PAGE_UP) == GLFW_PRESS;
     bk_now.pgdn  = glfwGetKey(window, GLFW_KEY_PAGE_DOWN) == GLFW_PRESS;
     bk_now.space = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+    bk_now.q = glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS;
+    bk_now.e = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+    bk_now.a = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS;
+    bk_now.d = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS;
+    bk_now.w = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS;
+    bk_now.s = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS;
 
     // Mouse for builder
     double bmx, bmy;

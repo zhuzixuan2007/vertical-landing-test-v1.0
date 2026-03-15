@@ -10,6 +10,10 @@
 #include <string>
 #include "math/math3d.h"
 
+#ifndef PI
+#define PI 3.1415926535f
+#endif
+
 // 1. Forward Declarations
 struct RocketAssembly;
 struct RocketConfig;
@@ -255,6 +259,7 @@ struct BuilderState {
     int current_symmetry = 1, hovered_part_def_id = -1;
     float hover_timer = 0, orbit_angle = 0.0f, orbit_pitch = 0.2f, cam_dist = 15.0f, orbit_speed = 0.0f, launch_blink = 0.0f;
     float cam_y_offset = 0.0f;
+    Quat placement_manual_rot = Quat(); // Manual rotation adjustment during placement
 
     // Context Menu State
     bool show_part_menu = false;
@@ -272,7 +277,9 @@ struct BuilderState {
 
 struct BuilderKeyState {
     bool up, down, left, right, enter, del, tab, pgup, pgdn, space;
-    float mx, my; bool lmb, rmb;
+    bool q, e, a, d, w, s; 
+    float mx, my; 
+    bool lmb, rmb;
 };
 
 // 7. UI Drawing & Input
@@ -323,7 +330,7 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
     drawBtn(ax, -0.07f,"CoT", bs.centerViz.hasCoT, bs.centerViz.showCoT, 0.70f,0.15f,0.15f);
 
     if (bs.show_part_menu && bs.r_clicked_part_idx != -1) {
-        float mx = bs.menu_pos.x, my = bs.menu_pos.y, mw = 0.30f, mh = 0.35f;
+        float mx = bs.menu_pos.x, my = bs.menu_pos.y, mw = 0.32f, mh = 0.68f;
         r->addRect(mx + mw/2.0f, my - mh/2.0f, mw, mh, 0.05f, 0.06f, 0.12f, 0.98f);
         const auto& p = bs.assembly.parts[bs.r_clicked_part_idx];
         const auto& d = PART_CATALOG[p.def_id];
@@ -353,18 +360,40 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
         char s_stage[32]; snprintf(s_stage, 32, "STAGE: %d (CYCLE)", p.stage);
         drawMenuBtn(my - 0.23f, s_stage);
         drawMenuBtn(my - 0.29f, "DELETE PART");
+
+        // Advanced controls: Translation & Rotation
+        float row_y = my - 0.35f;
+        float btn_w = mw / 3.2f;
+        auto drawAxisRow = [&](const char* label, float y) {
+            r->drawText(mx + 0.02f, y, label, 0.009f, 0.8f, 0.8f, 0.2f);
+            auto drawTinyBtn = [&](float x_off, const char* txt) {
+                bool hov = builderCheckHit(bs.last_mx, bs.last_my, mx + x_off, y, btn_w, 0.035f);
+                r->addRect(mx + x_off, y, btn_w, 0.035f, hov?0.3f:0.15f, hov?0.3f:0.15f, hov?0.4f:0.3f, 0.9f);
+                r->drawText(mx + x_off - 0.02f, y, txt, 0.009f, 1, 1, 1);
+            };
+            drawTinyBtn(btn_w*0.6f, "+");
+            drawTinyBtn(btn_w*1.6f, "-");
+        };
+
+        drawAxisRow("POS X", row_y);
+        drawAxisRow("POS Y", row_y - 0.04f);
+        drawAxisRow("POS Z", row_y - 0.08f);
+        drawAxisRow("ROT X", row_y - 0.14f);
+        drawAxisRow("ROT Y", row_y - 0.18f);
+        drawAxisRow("ROT Z", row_y - 0.22f);
     }
     r->addRect(-0.85f, -0.55f, 0.15f, 0.08f, 0.2f, 0.2f, 0.3f, 0.8f);
     char s_sym[16]; snprintf(s_sym, 16, "SYM: %dx", bs.current_symmetry); r->drawText(-0.91f,-0.55f,s_sym, 0.012f, 1,1,1);
     if (bs.assembly.hasEngine() && !bs.assembly.parts.empty()) {
         float blink = 0.5f + 0.5f*sinf(time*3.0f); r->addRect(0.0f,-0.93f,0.60f,0.08f, 0.05f*blink, 0.25f*blink, 0.05f*blink, 0.8f);
-        r->drawText(-0.18f,-0.93f,"[SPACE] LAUNCH", 0.013f, 0.3f, 1.0f*blink, 0.4f);
     }
-}inline bool builderHandleInput(BuilderState& bs, const BuilderKeyState& k, const BuilderKeyState& pk) {
+}
+
+inline bool builderHandleInput(BuilderState& bs, const BuilderKeyState& k, const BuilderKeyState& pk) {
     bs.last_mx = k.mx; bs.last_my = k.my;
     // Context Menu Interactivity (Highest Priority)
     if (bs.show_part_menu && k.lmb && !pk.lmb) {
-        float mx = bs.menu_pos.x, my = bs.menu_pos.y, mw = 0.28f;
+        float mx = bs.menu_pos.x, my = bs.menu_pos.y, mw = 0.32f, mh = 0.68f;
         auto& p = bs.assembly.parts[bs.r_clicked_part_idx];
         
         // Button 1: DUPLICATE
@@ -384,8 +413,39 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
             bs.assembly.removePart(bs.r_clicked_part_idx);
             bs.show_part_menu = false; return false;
         }
+
+        // Advanced controls (Translation & Rotation)
+        float row_y = my - 0.35f;
+        float btn_w = mw / 3.2f;
+        auto checkAxisBtn = [&](float x_off, float y_off, float& val, float step) {
+            if (builderCheckHit(k.mx, k.my, mx + x_off, row_y + y_off, btn_w, 0.035f)) { val += step; bs.assembly.recalculate(); return true; }
+            return false;
+        };
+        auto checkRotBtn = [&](float x_off, float y_off, Vec3 axis, float angle_deg) {
+            if (builderCheckHit(k.mx, k.my, mx + x_off, row_y + y_off, btn_w, 0.035f)) {
+                p.rot = p.rot * Quat::fromAxisAngle(axis, angle_deg * (float)PI / 180.0f);
+                p.rot = p.rot.normalized();
+                bs.assembly.recalculate(); return true;
+            }
+            return false;
+        };
+
+        if (checkAxisBtn(btn_w*0.6f, 0, p.pos.x, 0.1f)) return false;
+        if (checkAxisBtn(btn_w*1.6f, 0, p.pos.x, -0.1f)) return false;
+        if (checkAxisBtn(btn_w*0.6f, -0.04f, p.pos.y, 0.1f)) return false;
+        if (checkAxisBtn(btn_w*1.6f, -0.04f, p.pos.y, -0.1f)) return false;
+        if (checkAxisBtn(btn_w*0.6f, -0.08f, p.pos.z, 0.1f)) return false;
+        if (checkAxisBtn(btn_w*1.6f, -0.08f, p.pos.z, -0.1f)) return false;
+
+        if (checkRotBtn(btn_w*0.6f, -0.14f, Vec3(1,0,0), 5.0f)) return false;
+        if (checkRotBtn(btn_w*1.6f, -0.14f, Vec3(1,0,0), -5.0f)) return false;
+        if (checkRotBtn(btn_w*0.6f, -0.18f, Vec3(0,1,0), 5.0f)) return false;
+        if (checkRotBtn(btn_w*1.6f, -0.18f, Vec3(0,1,0), -5.0f)) return false;
+        if (checkRotBtn(btn_w*0.6f, -0.22f, Vec3(0,0,1), 5.0f)) return false;
+        if (checkRotBtn(btn_w*1.6f, -0.22f, Vec3(0,0,1), -5.0f)) return false;
+
         // Project a click outside menu or specialized "Close" area
-        if (!builderCheckHit(k.mx, k.my, mx + mw/2.0f, my - 0.17f, mw, 0.35f)) {
+        if (!builderCheckHit(k.mx, k.my, mx + mw/2.0f, my - mh/2.0f, mw, mh)) {
             bs.show_part_menu = false; 
         }
     }
@@ -408,6 +468,7 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
                 bs.dragging_def_id=cat_p[i]; 
                 bs.moving_part_idx = -1;
                 bs.in_assembly_mode = false; 
+                bs.placement_manual_rot = Quat(); // Reset manual rotation
             }
         }
     }
@@ -497,6 +558,7 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
                 float angle = atan2(normal.z, normal.x);
                 bs.dragging_rot = Quat::fromAxisAngle(Vec3(0, 1, 0), -angle + (float)PI/2.0f);
             }
+            bs.dragging_rot = bs.dragging_rot * bs.placement_manual_rot;
         } else { 
             if (bs.assembly.parts.empty()) {
                 bs.dragging_pos = Vec3(0, 0, 0); // Snap first part to origin
@@ -506,7 +568,18 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
                 bs.is_placement_valid = PART_CATALOG[bs.dragging_def_id].surf_attach;
             }
             bs.dragging_parent_idx = -1;
+            bs.dragging_rot = bs.placement_manual_rot;
         }
+
+        // --- Keyboard Rotation Controls ---
+        float rot_step = 5.0f * (float)PI / 180.0f;
+        if (k.q && !pk.q) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(0, 1, 0), rot_step);
+        if (k.e && !pk.e) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(0, 1, 0), -rot_step);
+        if (k.w && !pk.w) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(1, 0, 0), rot_step);
+        if (k.s && !pk.s) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(1, 0, 0), -rot_step);
+        if (k.a && !pk.a) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(0, 0, 1), rot_step);
+        if (k.d && !pk.d) bs.placement_manual_rot = bs.placement_manual_rot * Quat::fromAxisAngle(Vec3(0, 0, 1), -rot_step);
+        bs.placement_manual_rot = bs.placement_manual_rot.normalized();
 
         // Place or Delete
         if (k.lmb && !pk.lmb && dragging_id_at_start != -1) {
@@ -520,7 +593,9 @@ inline void drawBuilderUI_KSP(Renderer* r, BuilderState& bs, const AgencyState& 
                 bs.moving_part_idx = -1;
             } else if (bs.is_placement_valid && bs.hover_timer > 0.05f) { // Add a tiny delay (1-2 frames) before allowing placement
                 bs.assembly.addPart(bs.dragging_def_id, bs.dragging_parent_idx, bs.current_symmetry);
-                bs.assembly.parts.back().pos = bs.dragging_pos;
+                auto& newP = bs.assembly.parts.back();
+                newP.pos = bs.dragging_pos;
+                newP.rot = bs.dragging_rot; // Apply the rotated orientation
                 bs.dragging_def_id = -1; 
                 bs.moving_part_idx = -1;
                 bs.show_part_menu = false; // Cancel selection/menu after placement
