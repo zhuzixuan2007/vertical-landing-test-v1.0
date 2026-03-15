@@ -323,7 +323,7 @@ int main() {
   // =========================================================
   Renderer3D* r3d = new Renderer3D();
   Mesh earthMesh = MeshGen::sphere(96, 128, 1.0f);  // High-res unit sphere for RSS-Reborn quality
-  Mesh ringMesh = MeshGen::ring(64, 0.45f, 1.0f);   // 环形网格(内径0.45, 外径1.0)
+  Mesh ringMesh = MeshGen::ring(128, 1.11f, 2.35f);  // NASA Real Ratios: D-ring start to F-ring end (1.11R to 2.35R)
   Mesh rocketBody = MeshGen::cylinder(32, 1.0f, 1.0f);
   Mesh rocketNose = MeshGen::cone(32, 1.0f, 1.0f);
   Mesh rocketBox  = MeshGen::box(1.0f, 1.0f, 1.0f);
@@ -1641,7 +1641,7 @@ int main() {
               r3d->drawAtmosphere(earthMesh, atmoModel, camEye_rel, r3d->lightDir, renderPlanet, r, atmo_radius, (float)rocket_state.sim_time, (int)i, (float)day_blend);
           }
           if (b.type == RINGED_GAS_GIANT) {
-              Mat4 ringModel = Mat4::scale(Vec3(r * 2.2f, r * 0.001f, r * 2.2f));
+              Mat4 ringModel = Mat4::scale(Vec3(r, r, r)); // Mesh is now pre-scaled to R_planet ratios
               ringModel = Mat4::fromQuat(rotation_quat) * ringModel;
               ringModel = Mat4::translate(renderPlanet) * ringModel;
               r3d->drawRing(ringMesh, ringModel, b.r, b.g, b.b, 0.4f);
