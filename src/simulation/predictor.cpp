@@ -303,11 +303,24 @@ void AsyncOrbitPredictor::WorkerLoop() {
                     
                     // Record during burn at higher frequency
                     record_interval = 30.0;
-                } else {
                     // Burn complete
                     m_context.mnv_burning = false;
                     m_context.mnv_done = true;
                     record_interval = 600.0;
+                    
+                    // ARCHIVE: Capture the integrated absolute state for guidance synchronization
+                    if (!req.state.maneuvers.empty()) {
+                        auto& node = req.target->maneuvers[0];
+                        std::lock_guard<std::mutex> lock(*req.target->path_mutex);
+                        node.snap_px = mnv_h_px;
+                        node.snap_py = mnv_h_py;
+                        node.snap_pz = mnv_h_pz;
+                        node.snap_vx = mnv_h_vx;
+                        node.snap_vy = mnv_h_vy;
+                        node.snap_vz = mnv_h_vz;
+                        node.snap_time = t_sim;
+                        node.locked_burn_dir = m_context.mnv_thrust_dir;
+                    }
                 }
             }
 

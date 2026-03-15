@@ -1101,26 +1101,38 @@ int main() {
             
             // Populate velocity snapshot when approaching burn time (first time only)
             if (!node.snap_valid && time_to_burn_start < 5.0) {
-                CelestialBody& soi = SOLAR_SYSTEM[current_soi_index];
-                // Current absolute position/velocity at node creation
-                node.snap_px = rocket_state.px + soi.px;
-                node.snap_py = rocket_state.py + soi.py;
-                node.snap_pz = rocket_state.pz + soi.pz;
+                // Use the node's specific reference body
+                int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+                CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
                 
-                // Compute burn direction in world space
-                Vec3 r_rel((float)rocket_state.px, (float)rocket_state.py, (float)rocket_state.pz);
-                Vec3 v_rel((float)rocket_state.vx, (float)rocket_state.vy, (float)rocket_state.vz);
-                ManeuverFrame frame = ManeuverSystem::getFrame(r_rel, v_rel);
-                Vec3 dv_world = (frame.prograde * node.delta_v.x + 
-                                 frame.normal   * node.delta_v.y + 
-                                 frame.radial   * node.delta_v.z).normalized();
+                // 1. Get celestial state AT node time
+                double rbpx, rbpy, rbpz, rbvx, rbvy, rbvz;
+                PhysicsSystem::GetCelestialStateAt(ref_idx, node.sim_time, rbpx, rbpy, rbpz, rbvx, rbvy, rbvz);
                 
-                node.locked_burn_dir = dv_world; // Inertial Lock captured at ignition
+                // 2. Project rocket state to node time relative to THAT body
+                double mu_ref = G_const * ref_b.mass;
+                double npx, npy, npz, nvx, nvy, nvz;
+                get3DStateAtTime(rocket_state.px, rocket_state.py, rocket_state.pz, 
+                                rocket_state.vx, rocket_state.vy, rocket_state.vz, 
+                                mu_ref, node.sim_time - rocket_state.sim_time, 
+                                npx, npy, npz, nvx, nvy, nvz);
+
+                // 3. Compute burn direction in world space at node time
+                ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
+                Vec3 target_dv_world = (frame.prograde * node.delta_v.x + 
+                                       frame.normal   * node.delta_v.y + 
+                                       frame.radial   * node.delta_v.z);
                 
-                // Target absolute velocity for shutdown check
-                node.snap_vx = rocket_state.vx + soi.vx + dv_world.x * total_dv_mag;
-                node.snap_vy = rocket_state.vy + soi.vy + dv_world.y * total_dv_mag;
-                node.snap_vz = rocket_state.vz + soi.vz + dv_world.z * total_dv_mag;
+                node.locked_burn_dir = target_dv_world.normalized();
+                
+                // 4. Capture TARGET ABSOLUTE STATE for guidance
+                node.snap_px = rbpx + npx;
+                node.snap_py = rbpy + npy;
+                node.snap_pz = rbpz + npz;
+                node.snap_vx = rbvx + nvx + target_dv_world.x;
+                node.snap_vy = rbvy + nvy + target_dv_world.y;
+                node.snap_vz = rbvz + nvz + target_dv_world.z;
+                node.snap_time = node.sim_time; // Fallback: impulsive completion time
                 node.snap_valid = true;
             }
 
@@ -1128,13 +1140,35 @@ int main() {
                 // Compute remaining dv
                 double remaining_dv = total_dv_mag;
                 if (node.snap_valid) {
-                    double cur_abs_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx;
-                    double cur_abs_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy;
-                    double cur_abs_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz;
-                    double rem_vx = node.snap_vx - cur_abs_vx;
-                    double rem_vy = node.snap_vy - cur_abs_vy;
-                    double rem_vz = node.snap_vz - cur_abs_vz;
-                    remaining_dv = sqrt(rem_vx*rem_vx + rem_vy*rem_vy + rem_vz*rem_vz);
+                    int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+                    CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
+                    
+                    // 1. Current relative state
+                    double cur_rel_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
+                    double cur_rel_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
+                    double cur_rel_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
+                    
+                    // 2. Propagate Goal Orbit to current time
+                    double mu_ref = G_const * ref_b.mass;
+                    double snap_rel_px = node.snap_px - ref_b.px;
+                    double snap_rel_py = node.snap_py - ref_b.py;
+                    double snap_rel_pz = node.snap_pz - ref_b.pz;
+                    double snap_rel_vx = node.snap_vx - ref_b.vx;
+                    double snap_rel_vy = node.snap_vy - ref_b.vy;
+                    double snap_rel_vz = node.snap_vz - ref_b.vz;
+                    
+                    double dt_snap = rocket_state.sim_time - node.snap_time;
+                    double tpx, tpy, tpz, tvx, tvy, tvz;
+                    get3DStateAtTime(snap_rel_px, snap_rel_py, snap_rel_pz, snap_rel_vx, snap_rel_vy, snap_rel_vz, 
+                                     mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
+                    
+                    Vec3 rem_v((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
+                    
+                    // PROJECTION-BASED Delta-V for shutdown precision
+                    remaining_dv = (double)rem_v.dot(node.locked_burn_dir);
+                    
+                    double total_error_mag = (double)rem_v.length();
+                    if (total_error_mag < 0.05) remaining_dv = 0; 
                 }
             
             // Phase 1: Point toward burn direction (60s before burn start)
@@ -2117,7 +2151,7 @@ int main() {
         double s_sinE = cur_r_vec.dot(stable_p_dir) / s_b;
         double stable_M0 = atan2(s_sinE, s_cosE) - stable_ecc * sin(atan2(s_sinE, s_cosE));
         Vec3 stable_center = stable_e_dir * (-(float)stable_a * (float)stable_ecc);
-        int stable_ref = current_soi_index;
+        int stable_ref = adv_orbit_enabled ? adv_orbit_ref_body : current_soi_index;
 
         // Use a local delta for dragging (calculate once per frame)
         static float last_pass_mx = 0, last_pass_my = 0;
@@ -2308,9 +2342,6 @@ int main() {
             
             // Compute time to node or start of burn
             double target_t = node.sim_time;
-            if (node.burn_mode == 1) {
-                target_t = node.sim_time - 0.5 * mnv_popup_burn_time;
-            }
             mnv_popup_time_to_node = target_t - rocket_state.sim_time;
             if (mnv_popup_time_to_node < -mnv_popup_burn_time) mnv_popup_time_to_node = -mnv_popup_burn_time; // keep showing count-up during burn
             
@@ -2319,36 +2350,47 @@ int main() {
             float total_dv_val = node.delta_v.length();
             float remaining_dv = total_dv_val; // Default: full delta-v
             
-            // Populate snapshot when approaching node time (for manual burns too)
+            // Populate snapshot when approaching node time (consistent with autopilot)
             if (!node.snap_valid && rocket_state.sim_time >= node.sim_time - 5.0) {
-                CelestialBody& soi = SOLAR_SYSTEM[current_soi_index];
-                node.snap_px = rocket_state.px + soi.px;
-                node.snap_py = rocket_state.py + soi.py;
-                node.snap_pz = rocket_state.pz + soi.pz;
-                
-                Vec3 r_rel((float)rocket_state.px, (float)rocket_state.py, (float)rocket_state.pz);
-                Vec3 v_rel((float)rocket_state.vx, (float)rocket_state.vy, (float)rocket_state.vz);
-                ManeuverFrame frame = ManeuverSystem::getFrame(r_rel, v_rel);
-                Vec3 dv_world = frame.prograde * node.delta_v.x + 
-                                frame.normal   * node.delta_v.y + 
-                                frame.radial   * node.delta_v.z;
-                
-                node.snap_vx = rocket_state.vx + soi.vx + dv_world.x;
-                node.snap_vy = rocket_state.vy + soi.vy + dv_world.y;
-                node.snap_vz = rocket_state.vz + soi.vz + dv_world.z;
+                int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+                CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
+                double rbpx, rbpy, rbpz, rbvx, rbvy, rbvz;
+                PhysicsSystem::GetCelestialStateAt(ref_idx, node.sim_time, rbpx, rbpy, rbpz, rbvx, rbvy, rbvz);
+                double mu_ref = G_const * ref_b.mass;
+                double npx, npy, npz, nvx, nvy, nvz;
+                get3DStateAtTime(rocket_state.px, rocket_state.py, rocket_state.pz, rocket_state.vx, rocket_state.vy, rocket_state.vz, mu_ref, node.sim_time - rocket_state.sim_time, npx, npy, npz, nvx, nvy, nvz);
+                ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
+                Vec3 target_dv_world = (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z);
+                node.locked_burn_dir = target_dv_world.normalized();
+                node.snap_px = rbpx + npx;
+                node.snap_py = rbpy + npy;
+                node.snap_pz = rbpz + npz;
+                node.snap_vx = rbvx + nvx + target_dv_world.x;
+                node.snap_vy = rbvy + nvy + target_dv_world.y;
+                node.snap_vz = rbvz + nvz + target_dv_world.z;
+                node.snap_time = node.sim_time;
                 node.snap_valid = true;
             }
             
             if (node.snap_valid) {
-                // Compute remaining dv from velocity difference vs target
-                double cur_abs_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx;
-                double cur_abs_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy;
-                double cur_abs_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz;
-                double rem_vx = node.snap_vx - cur_abs_vx;
-                double rem_vy = node.snap_vy - cur_abs_vy;
-                double rem_vz = node.snap_vz - cur_abs_vz;
-                remaining_dv = (float)sqrt(rem_vx*rem_vx + rem_vy*rem_vy + rem_vz*rem_vz);
-                if (remaining_dv < 0.1f) remaining_dv = 0.0f; // Threshold for completion
+                int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+                CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
+                
+                double cur_rel_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
+                double cur_rel_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
+                double cur_rel_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
+                
+                double mu_ref = G_const * ref_b.mass;
+                double dt_snap = rocket_state.sim_time - node.snap_time;
+                double tpx, tpy, tpz, tvx, tvy, tvz;
+                get3DStateAtTime(node.snap_px - ref_b.px, node.snap_py - ref_b.py, node.snap_pz - ref_b.pz,
+                                 node.snap_vx - ref_b.vx, node.snap_vy - ref_b.vy, node.snap_vz - ref_b.vz,
+                                 mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
+                
+                Vec3 rem_v((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
+                remaining_dv = (float)rem_v.length();
+                
+                if (remaining_dv < 0.1f) remaining_dv = 0.0f;
             }
             
             // Compute estimated burn time using Tsiolkovsky equation
@@ -3098,22 +3140,33 @@ int main() {
         ManeuverNode& node = rocket_state.maneuvers[rocket_state.selected_maneuver_index];
         
         if (node.snap_valid) {
-            vManeuver = node.locked_burn_dir;
+            // High-Precision Target Orbit Tracking (Principia Style)
+            int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+            CelestialBody& ref_b = SOLAR_SYSTEM[ref_idx];
             
-            // Calculate remaining dv based on absolute velocities
-            double cur_abs_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx;
-            double cur_abs_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy;
-            double cur_abs_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz;
-            Vec3 rem_v((float)(node.snap_vx - cur_abs_vx), (float)(node.snap_vy - cur_abs_vy), (float)(node.snap_vz - cur_abs_vz));
+            double cur_rel_vx = rocket_state.vx + SOLAR_SYSTEM[current_soi_index].vx - ref_b.vx;
+            double cur_rel_vy = rocket_state.vy + SOLAR_SYSTEM[current_soi_index].vy - ref_b.vy;
+            double cur_rel_vz = rocket_state.vz + SOLAR_SYSTEM[current_soi_index].vz - ref_b.vz;
+            
+            double mu_ref = G_const * ref_b.mass;
+            double dt_snap = rocket_state.sim_time - node.snap_time;
+            double tpx, tpy, tpz, tvx, tvy, tvz;
+            get3DStateAtTime(node.snap_px - ref_b.px, node.snap_py - ref_b.py, node.snap_pz - ref_b.pz,
+                             node.snap_vx - ref_b.vx, node.snap_vy - ref_b.vy, node.snap_vz - ref_b.vz,
+                             mu_ref, dt_snap, tpx, tpy, tpz, tvx, tvy, tvz);
+            
+            Vec3 rem_v((float)(tvx - cur_rel_vx), (float)(tvy - cur_rel_vy), (float)(tvz - cur_rel_vz));
+            
             dv_remaining = (double)rem_v.length();
+            vManeuver = rem_v.normalized();
         } else {
-            double mu = 6.67430e-11 * SOLAR_SYSTEM[current_soi_index].mass;
+            // Pre-ignition: Use projected state at node
+            int ref_idx = (node.ref_body >= 0) ? node.ref_body : current_soi_index;
+            double mu = G_const * SOLAR_SYSTEM[ref_idx].mass;
             double npx, npy, npz, nvx, nvy, nvz;
-            // Project current state to node time
             get3DStateAtTime(rocket_state.px, rocket_state.py, rocket_state.pz, rocket_state.vx, rocket_state.vy, rocket_state.vz, mu, node.sim_time - rocket_state.sim_time, npx, npy, npz, nvx, nvy, nvz);
             ManeuverFrame frame = ManeuverSystem::getFrame(Vec3((float)npx, (float)npy, (float)npz), Vec3((float)nvx, (float)nvy, (float)nvz));
-            Vec3 target_dv_world = (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z).normalized();
-            vManeuver = target_dv_world;
+            vManeuver = (frame.prograde * node.delta_v.x + frame.normal * node.delta_v.y + frame.radial * node.delta_v.z).normalized();
             dv_remaining = (double)node.delta_v.length();
         }
     }
@@ -3654,15 +3707,6 @@ int main() {
             // Process warp-to-node: set time_warp to max safe level until near the node
             if (adv_warp_to_node && has_mnv_btn) {
                 double target_t = rocket_state.maneuvers[0].sim_time;
-                if (rocket_state.maneuvers[0].burn_mode == 1) {
-                    // In sustained mode, calculate duration to find start time
-                    double dv_val = rocket_state.maneuvers[0].delta_v.length();
-                    double m0 = rocket_state.fuel + rocket_config.dry_mass + rocket_config.upper_stages_mass;
-                    double ve = rocket_config.specific_impulse * 9.80665;
-                    double duration = 0;
-                    if (ve > 0 && rocket_config.cosrate > 0 && dv_val > 0) duration = m0 * (1.0 - 1.0/exp(dv_val/ve)) / rocket_config.cosrate;
-                    target_t -= 0.5 * duration;
-                }
                 double time_to_start = target_t - rocket_state.sim_time;
                 if (time_to_start <= 60.0) {
                     // Arrived at start window! Stop warping
@@ -3842,9 +3886,9 @@ int main() {
             if (mnv_popup_time_to_node > 3600) {
                 int t_hr = (int)(mnv_popup_time_to_node / 3600.0);
                 t_min = (int)fmod(mnv_popup_time_to_node / 60.0, 60.0);
-                snprintf(buf, sizeof(buf), "%s: %dH %02dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_hr, t_min, t_sec);
+                snprintf(buf, sizeof(buf), "T-IGN: %dH %02dM %02dS", t_hr, t_min, t_sec);
             } else if (mnv_popup_time_to_node >= 0) {
-                snprintf(buf, sizeof(buf), "%s: %dM %02dS", (mnv_popup_burn_mode == 1 ? "T-START" : "T-NODE"), t_min, t_sec);
+                snprintf(buf, sizeof(buf), "T-IGN: %dM %02dS", t_min, t_sec);
             } else {
                 snprintf(buf, sizeof(buf), "BURN+ %dS", (int)(-mnv_popup_time_to_node));
             }
