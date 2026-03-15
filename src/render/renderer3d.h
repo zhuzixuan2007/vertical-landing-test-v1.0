@@ -8,6 +8,9 @@
 #include "core/rocket_state.h"
 // NOTE: glad must be included BEFORE this header in the main translation unit
 #include <vector>
+#include <string>
+#include <map>
+#include <fstream>
 
 // ==========================================================
 // 3D Vertex Format
@@ -76,6 +79,24 @@ struct Mesh {
     if (vbo) glDeleteBuffers(1, &vbo);
     if (ebo) glDeleteBuffers(1, &ebo);
     vao = vbo = ebo = 0;
+  }
+};
+
+// ==========================================================
+// Texture — 2D 纹理对象
+// ==========================================================
+struct Texture {
+  GLuint id = 0;
+  int width = 0, height = 0;
+
+  void destroy() {
+    if (id) glDeleteTextures(1, &id);
+    id = 0;
+  }
+
+  void bind(GLuint slot = 0) const {
+    glActiveTexture(GL_TEXTURE0 + slot);
+    glBindTexture(GL_TEXTURE_2D, id);
   }
 };
 
@@ -299,6 +320,44 @@ inline Mesh ring(int segs, float innerRadius, float outerRadius) {
 // ==========================================================
 class Renderer3D {
 public:
+  // Simple TGA Loader (for uncompressed 24/32-bit TGA)
+  static Texture loadTGA(const char* filepath) {
+    Texture tex;
+    std::ifstream file(filepath, std::ios::binary);
+    if (!file.is_open()) return tex;
+
+    unsigned char header[18];
+    file.read((char*)header, 18);
+    
+    int w = header[12] | (header[13] << 8);
+    int h = header[14] | (header[15] << 8);
+    int bpp = header[16];
+
+    if (bpp != 24 && bpp != 32) return tex;
+
+    int size = w * h * (bpp / 8);
+    std::vector<unsigned char> data(size);
+    file.read((char*)data.data(), size);
+
+    // BGR(A) to RGB(A)
+    for (int i = 0; i < size; i += (bpp / 8)) {
+        unsigned char tmp = data[i];
+        data[i] = data[i + 2];
+        data[i + 2] = tmp;
+    }
+
+    glGenTextures(1, &tex.id);
+    glBindTexture(GL_TEXTURE_2D, tex.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, (bpp == 32) ? GL_RGBA : GL_RGB, w, h, 0, (bpp == 32) ? GL_RGBA : GL_RGB, GL_UNSIGNED_BYTE, data.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    tex.width = w; tex.height = h;
+    return tex;
+  }
+
   GLuint program3d = 0;
   GLuint earthProgram = 0;
   GLuint gasGiantProgram = 0;
@@ -310,7 +369,7 @@ public:
   GLuint skyboxVAO = 0, skyboxVBO = 0;
   GLuint billboardVAO = 0, billboardVBO = 0;
   GLint u_mvp = -1, u_model = -1, u_lightDir = -1, u_viewPos = -1;
-  GLint u_baseColor = -1, u_ambientStr = -1;
+  GLint u_baseColor = -1, u_ambientStr = -1, u_sampler = -1, u_hasTexture = -1;
   GLint ue_mvp = -1, ue_model = -1, ue_lightDir = -1, ue_viewPos = -1, ue_time = -1;
   GLint ugg_mvp = -1, ugg_model = -1, ugg_lightDir = -1, ugg_viewPos = -1, ugg_baseColor = -1;
   GLint uba_mvp = -1, uba_model = -1, uba_lightDir = -1, uba_viewPos = -1, uba_baseColor = -1;
@@ -338,6 +397,10 @@ public:
   Mat4 view, proj;
   Vec3 camPos;
   Vec3 lightDir;
+
+  // Cached meshes and textures for parts
+  std::map<std::string, Mesh> meshCache;
+  std::map<std::string, Texture> textureCache;
 
   // Ribbon Renderer properties
   GLuint ribbonProg, ribbonVAO, ribbonVBO;
@@ -401,6 +464,8 @@ public:
       uniform vec3 uViewPos;
       uniform vec4 uBaseColor;
       uniform float uAmbientStr;
+      uniform sampler2D uSampler;
+      uniform bool uHasTexture;
 
       out vec4 FragColor;
 
@@ -412,7 +477,10 @@ public:
         vec3 V = normalize(uViewPos - vWorldPos);
         vec3 H = normalize(L + V);
         float spec = pow(max(dot(N, H), 0.0), 32.0);
-        vec4 color = uBaseColor * vColor;
+        
+        vec4 texColor = uHasTexture ? texture(uSampler, vUV) : vec4(1.0);
+        vec4 color = uBaseColor * vColor * texColor;
+        
         vec3 result = color.rgb * (ambient + diff * 0.7 + spec * 0.3);
         FragColor = vec4(result, color.a);
       }
@@ -425,6 +493,8 @@ public:
     u_viewPos = glGetUniformLocation(program3d, "uViewPos");
     u_baseColor = glGetUniformLocation(program3d, "uBaseColor");
     u_ambientStr = glGetUniformLocation(program3d, "uAmbientStr");
+    u_sampler = glGetUniformLocation(program3d, "uSampler");
+    u_hasTexture = glGetUniformLocation(program3d, "uHasTexture");
 
     // --- Earth Shader (RSS-Reborn quality procedural rendering) ---
     const char* earthFragSrc = R"(
