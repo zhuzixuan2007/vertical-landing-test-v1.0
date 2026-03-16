@@ -2958,12 +2958,26 @@ R"(
                    mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), 
                        mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
       }
+
+      float fbm(vec3 p) {
+          float v = 0.0, a = 0.5;
+          for (int i = 0; i < 5; i++) {
+              v += a * noise3d(p);
+              p *= 2.0; a *= 0.5;
+          }
+          return v;
+      }
+
+      // Domain Warping for organic shapes
+      float warpedNoise(vec3 p) {
+          vec3 q = vec3(fbm(p + vec3(0.0)), fbm(p + vec3(5.2, 1.3, 0.1)), fbm(p + vec3(2.1, 9.2, 4.4)));
+          return fbm(p + 4.0 * q);
+      }
       
-      // Procedural height for POM and Normal Derivatives
-      float getMicroHeight(vec3 p) {
+      float getMicroHeight(vec3 p, float distFade) {
           float h = noise3d(p * 800.0) * 0.5;
-          h += noise3d(p * 8000.0) * 0.15;
-          h += noise3d(p * 40000.0) * 0.05;
+          h += noise3d(p * 8000.0) * 0.15 * clamp(1.0 - distFade * 0.2, 0.0, 1.0);
+          h += noise3d(p * 40000.0) * 0.05 * clamp(1.0 - distFade * 0.5, 0.0, 1.0);
           return h;
       }
 
@@ -2972,77 +2986,93 @@ R"(
         vec3 V = normalize(uViewPos - vWorldPos);
         
         float distToCam = length(uViewPos - vWorldPos);
-        float microFade = clamp(1.0 - (distToCam / 2.0), 0.0, 1.0); // Only within 2km
+        float detailFade = distToCam; // kilometers
 
         // --- INDUSTRIAL GRADE: PARALLAX OCCLUSION MAPPING (POM) ---
         vec3 pLocal = vLocalPos;
+        float microFade = clamp(1.0 - (detailFade / 2.0), 0.0, 1.0); 
         if (microFade > 0.01 && vElevation > 0.44) {
-            // Transform view vector to local space for raymarching
-            // For a sphere, we can approximate the tangent space
             vec3 N_geom = normalize(vNormal);
             vec3 T = normalize(cross(N_geom, vec3(0,1,0)));
             if (abs(N_geom.y) > 0.99) T = normalize(cross(N_geom, vec3(0,0,1)));
             vec3 B = cross(N_geom, T);
             mat3 TBN = mat3(T, B, N_geom);
-            vec3 vLocalDir = normalize(V * TBN); // View in tangent space
+            vec3 vLocalDir = normalize(V * TBN);
             
             float numLayers = mix(8.0, 32.0, abs(dot(vLocalDir, vec3(0,0,1))));
             float layerDepth = 1.0 / numLayers;
             float currentLayerDepth = 0.0;
-            vec2 P = vLocalDir.xy * 0.0005; // Scale of parallax
+            vec2 P = vLocalDir.xy * 0.0005;
             vec2 deltaP = P / numLayers;
             
             vec2 currentTexCoords = vec2(0.0);
-            float currentDepthMapValue = getMicroHeight(pLocal);
+            float currentDepthMapValue = getMicroHeight(pLocal, detailFade);
             
             while(currentLayerDepth < currentDepthMapValue) {
                 currentTexCoords -= deltaP;
-                currentDepthMapValue = getMicroHeight(pLocal + T * currentTexCoords.x + B * currentTexCoords.y);
+                currentDepthMapValue = getMicroHeight(pLocal + T * currentTexCoords.x + B * currentTexCoords.y, detailFade);
                 currentLayerDepth += layerDepth;
             }
             
-            // Linear interpolation for smoother depth
             vec2 prevTexCoords = currentTexCoords + deltaP;
             float afterDepth  = currentDepthMapValue - currentLayerDepth;
-            float beforeDepth = getMicroHeight(pLocal + T * prevTexCoords.x + B * prevTexCoords.y) - currentLayerDepth + layerDepth;
+            float beforeDepth = getMicroHeight(pLocal + T * prevTexCoords.x + B * prevTexCoords.y, detailFade) - currentLayerDepth + layerDepth;
             float weight = afterDepth / (afterDepth - beforeDepth);
             currentTexCoords = prevTexCoords * weight + currentTexCoords * (1.0 - weight);
             
-            // Update pLocal for subsequent color/normal logic
             pLocal += T * currentTexCoords.x + B * currentTexCoords.y;
         }
 
-        // Biome logic based on raw noise vElevation
-        float h = vElevation;
+        // --- KSC FLATTENING & COASTAL GUARANTEE ---
+        // Cape Canaveral: Lat 28.5, Lon -80.5 -> vec3(0.145, -0.867, 0.477)
+        vec3 kscPos = vec3(0.145, -0.867, 0.477);
+        float kscDist = length(vLocalPos - kscPos);
+        float kscMask = smoothstep(0.08, 0.02, kscDist); // Flatten within strictly defined radius
+        
+        // High-res fragment-side elevation for organic coastline
+        // Lower noise frequency (120.0 -> 18.0) for smoother, planetary-scale coastlines
+        float geoNoise = warpedNoise(vLocalPos * 18.0);
+        float h = mix(vElevation, geoNoise, 0.2); 
+        
+        // Force KSC to be coastal lowland
+        h = mix(h, 0.445, kscMask);
+
         float seaLevel = 0.44;
         
-        vec3 deepWater = vec3(0.02, 0.08, 0.20);
-        vec3 shallowWater = vec3(0.1, 0.4, 0.5);
-        vec3 beach = vec3(0.76, 0.72, 0.55);
-        vec3 lowland = vec3(0.15, 0.38, 0.12);
-        vec3 forest = vec3(0.08, 0.28, 0.06);
-        vec3 mountain = vec3(0.48, 0.45, 0.42);
-        vec3 snow = vec3(0.95, 0.96, 1.0);
+        vec3 deepWater = vec3(0.01, 0.06, 0.15);
+        vec3 shallowWater = vec3(0.05, 0.35, 0.45);
+        vec3 beach = vec3(0.72, 0.68, 0.52);
+        vec3 lowland = vec3(0.12, 0.32, 0.10);
+        vec3 forest = vec3(0.06, 0.22, 0.05);
+        vec3 mountain = vec3(0.42, 0.38, 0.35);
+        vec3 snow = vec3(0.92, 0.94, 1.0);
 
         vec3 surfColor;
         float waterAlpha = 0.0;
         
         if (h < seaLevel) {
             float waterDepth = (seaLevel - h) / seaLevel;
-            surfColor = mix(shallowWater, deepWater, clamp(waterDepth * 5.0, 0.0, 1.0));
+            surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.5, waterDepth));
+            // Shoreline foam effect
+            float shore = smoothstep(0.005, 0.0, seaLevel - h);
+            surfColor = mix(surfColor, vec3(0.8, 0.9, 1.0), shore * 0.4);
             waterAlpha = 1.0;
         } else {
             float landH = (h - seaLevel) / (1.0 - seaLevel);
-            if (landH < 0.01) surfColor = beach;
-            else if (landH < 0.15) surfColor = mix(beach, lowland, (landH-0.01)/0.14);
-            else if (landH < 0.45) surfColor = mix(lowland, forest, (landH-0.15)/0.30);
-            else if (landH < 0.75) surfColor = mix(forest, mountain, (landH-0.45)/0.30);
-            else surfColor = mix(mountain, snow, clamp((landH-0.75)/0.25, 0.0, 1.0));
+            // Industrial Grade: Soft Biome Blending using smoothstep layers
+            vec3 cLow = mix(beach, lowland, smoothstep(0.0, 0.15, landH));
+            vec3 cMid = mix(cLow, forest, smoothstep(0.15, 0.45, landH));
+            vec3 cHigh = mix(cMid, mountain, smoothstep(0.45, 0.75, landH));
+            surfColor = mix(cHigh, snow, smoothstep(0.75, 0.95, landH));
+            
+            // Break up biomes with organic jitter
+            float jitter = warpedNoise(vLocalPos * 50.0);
+            surfColor = mix(surfColor, surfColor * (0.8 + 0.4 * jitter), 0.2);
         }
         
-        // Detailed micro-noise integration
-        float detailH = getMicroHeight(pLocal);
-        surfColor *= (0.90 + 0.20 * detailH);
+        // Detailed micro-noise integration (filtered for anti-aliasing)
+        float detailH = getMicroHeight(pLocal, detailFade);
+        surfColor *= (0.92 + 0.16 * detailH);
 
         // --- INDUSTRIAL GRADE: PROCEDURAL NORMAL DERIVATIVES ---
         vec3 N = normalize(vNormal);
@@ -3053,16 +3083,16 @@ R"(
             if (abs(N.y) > 0.99) T = normalize(cross(N, vec3(0,0,1)));
             vec3 B = cross(N, T);
             
-            float hCenter = getMicroHeight(pLocal);
-            float hRight  = getMicroHeight(pLocal + T * eps);
-            float hUp     = getMicroHeight(pLocal + B * eps);
+            float hCenter = getMicroHeight(pLocal, detailFade);
+            float hRight  = getMicroHeight(pLocal + T * eps, detailFade);
+            float hUp     = getMicroHeight(pLocal + B * eps, detailFade);
             
             vec3 grad = vec3((hRight - hCenter)/eps, (hUp - hCenter)/eps, 0.0);
             vec3 pertN = normalize(vec3(-grad.x, -grad.y, 1.0));
             N = normalize(T * pertN.x + B * pertN.y + N * pertN.z);
             
-            // Micro-AO based on height
-            surfColor *= clamp(hCenter * 4.0, 0.6, 1.0);
+            // Micro-AO based on height (gentle contrast only)
+            surfColor *= mix(0.92, 1.0, smoothstep(0.0, 0.6, hCenter));
         } else {
             // Water ripples
             float ripple = noise3d(pLocal * 1500.0 + vec3(uTime * 0.1));
