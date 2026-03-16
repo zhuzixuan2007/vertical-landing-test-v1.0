@@ -474,6 +474,9 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     if (SOLAR_SYSTEM.empty()) return;
     
     state.sim_time += dt;
+    if (state.status != PRE_LAUNCH) {
+        state.mission_timer += dt;
+    }
     
     // 1. Ensure celestial bodies are at the correct positions for this sim time
     UpdateCelestialBodies(state.sim_time);
@@ -760,6 +763,9 @@ void FastGravityUpdate(RocketState& state, const RocketConfig& config, double dt
     // Handle Ground Parking at High Warp
     if (state.status == PRE_LAUNCH || state.status == LANDED) {
         state.sim_time += dt_total;
+        if (state.status != PRE_LAUNCH) {
+            state.mission_timer += dt_total;
+        }
         UpdateCelestialBodies(state.sim_time);
         
         CelestialBody& current_body = SOLAR_SYSTEM[current_soi_index];
@@ -792,6 +798,9 @@ void FastGravityUpdate(RocketState& state, const RocketConfig& config, double dt
         double dt = std::min(t_remaining, dt_step);
         t_remaining -= dt;
         state.sim_time += dt;
+        if (state.status != PRE_LAUNCH) {
+            state.mission_timer += dt;
+        }
         
         // Ensure celestial bodies and SOI are updated as time passes rapidly
         UpdateCelestialBodies(state.sim_time);

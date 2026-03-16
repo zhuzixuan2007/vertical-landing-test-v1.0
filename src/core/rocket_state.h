@@ -251,6 +251,7 @@ struct RocketState {
     std::string mission_msg = "SYSTEM READY";
     int mission_phase = 0;
     double mission_timer = 0.0;
+    bool show_absolute_time = false;
     bool auto_mode = true;
     bool sas_active = true;
     bool rcs_active = true;

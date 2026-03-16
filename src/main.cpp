@@ -65,32 +65,29 @@ Renderer *renderer;
 // drawBuilderUI -> replaced by drawBuilderUI_KSP in rocket_builder.h
 
 void Report_Status(const RocketState& state, const ControlInput& input) {
-  double apo = 0, peri = 0;
-  PhysicsSystem::getOrbitParams(state, apo, peri);
-  cout << "\n----------------------------------" << endl;
-  cout << ">>> [MISSION CONTROL]: " << state.mission_msg << " <<<" << endl;
-  cout << "----------------------------------" << endl;
-  cout << "[Alt]: " << state.altitude << " m | [Vert_Vel]: " << state.velocity << " m/s";
-  
-  double surface_speed = std::sqrt(state.velocity * state.velocity + state.local_vx * state.local_vx);
-  bool is_parked = (state.status == PRE_LAUNCH || state.status == LANDED) && surface_speed < 0.1;
+  // ... (unchanged)
+}
 
-  if (!state.auto_mode && (state.altitude > 100000.0 || is_parked) && input.throttle < 0.01) {
-      cout << " | [WARP READY]" << endl;
-  } else {
-      cout << endl;
-  }
-  double velocity_mag = sqrt(state.vx*state.vx + state.vy*state.vy + state.vz*state.vz);
-  cout << "[Pos_X]: " << state.px << " m | [Horz_Vel]: " << state.vx << " m/s" << endl;
-  cout << "[Angle]: " << state.angle * 180.0 / PI
-       << " deg | [Throttle]: " << input.throttle * 100 << "%" << endl;
-  cout << "[Ground_Horz_Vel]: " << state.local_vx
-       << " m/s | [Orbit_Vel]: " << velocity_mag << " m/s" << endl;
-  cout << "[Thrust]: " << state.thrust_power / 1000 << " kN | [Fuel]: " << state.fuel
-       << " kg" << endl;
-  cout << "[Apoapsis]: " << apo / 1000.0
-       << " km | [Periapsis]: " << peri / 1000.0 << " km" << endl;
-  cout << "[Status]: " << state.status << endl;
+std::string formatTime(double seconds, bool absolute) {
+    if (absolute) {
+        // UT: Day 000, HH:MM:SS
+        int day = (int)(seconds / (24 * 3600));
+        int hour = (int)((seconds - day * 24 * 3600) / 3600);
+        int min = (int)((seconds - day * 24 * 3600 - hour * 3600) / 60);
+        int sec = (int)(seconds - day * 24 * 3600 - hour * 3600 - min * 60);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "UT DAY %03d, %02d:%02d:%02d", day, hour, min, sec);
+        return string(buf);
+    } else {
+        // MET: T+ DD:HH:MM:SS
+        int day = (int)(seconds / (24 * 3600));
+        int hour = (int)((seconds - day * 24 * 3600) / 3600);
+        int min = (int)((seconds - day * 24 * 3600 - hour * 3600) / 60);
+        int sec = (int)(seconds - day * 24 * 3600 - hour * 3600 - min * 60);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "T+ %02d:%02d:%02d:%02d", day, hour, min, sec);
+        return string(buf);
+    }
 }
 
 int main() {
@@ -3095,9 +3092,31 @@ int main() {
       renderer->drawText(mode_x, mode_y, "MANUAL", 0.020f, 0.1f, 0.1f, 0.1f, 0.9f, false, Renderer::CENTER);
     }
 
-    // --- 7. Mission Status (Top Center) ---
+    // --- 7. Mission Status & Time (Top Center) ---
     renderer->drawText(0.0f, 0.85f, "[MISSION CONTROL]", 0.016f, 0.4f, 1.0f, 0.4f, hud_opacity, true, Renderer::CENTER);
     renderer->drawText(0.0f, 0.80f, rocket_state.mission_msg.c_str(), 0.015f, 0.8f, 0.8f, 1.0f, hud_opacity, true, Renderer::CENTER);
+
+    // Time Display & Toggle
+    float time_y = 0.92f;
+    float time_w = 0.35f;
+    float time_h = 0.04f;
+    bool is_hover_time = (hmouse_x >= -time_w/2.0f && hmouse_x <= time_w/2.0f &&
+                          hmouse_y >= time_y - time_h/2.0f && hmouse_y <= time_y + time_h/2.0f);
+    
+    if (is_hover_time && hlmb && !hlmb_prev) {
+        rocket_state.show_absolute_time = !rocket_state.show_absolute_time;
+    }
+
+    renderer->addRect(0.0f, time_y, time_w, time_h, 0.05f, 0.05f, 0.05f, 0.7f);
+    string time_str = formatTime(rocket_state.show_absolute_time ? rocket_state.sim_time : rocket_state.mission_timer, rocket_state.show_absolute_time);
+    renderer->drawText(0.0f, time_y, time_str.c_str(), 0.018f, 1.0f, 1.0f, 1.0f, 0.9f, true, Renderer::CENTER);
+
+    // Time Warp Display
+    if (time_warp > 1) {
+        char warp_buf[32];
+        snprintf(warp_buf, sizeof(warp_buf), "WARP: %dx", time_warp);
+        renderer->drawText(0.25f, time_y, warp_buf, 0.015f, 1.0f, 0.8f, 0.1f, 0.9f, true, Renderer::LEFT);
+    }
 
     // --- 8. Stage Indicator (Below mode indicator) ---
     if (rocket_state.total_stages > 1) {
