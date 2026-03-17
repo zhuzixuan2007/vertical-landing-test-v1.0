@@ -32,8 +32,9 @@ void InitSolarSystem() {
     sun.ecc_base = 0.0; sun.ecc_rate = 0.0;
     sun.inc_base = 0.0; sun.inc_rate = 0.0;
     sun.lan_base = 0.0; sun.lan_rate = 0.0;
-    sun.arg_peri_base = 0.0; sun.arg_peri_rate = 0.0;
     sun.mean_anom_base = 0.0; sun.mean_anom_rate = 0.0;
+    sun.surface_pressure = 0.0; sun.average_temp = 5778.0; sun.scattering_coef = 1.0;
+    sun.eccentricity = 0.0; sun.inclination = 0.0; sun.orbital_period = 0.0;
     SOLAR_SYSTEM.push_back(sun);
 
     // 1: MERCURY
@@ -52,6 +53,8 @@ void InitSolarSystem() {
     mercury.lan_base = 48.33076593 * PI / 180.0; mercury.lan_rate = -0.12534081 * PI / 180.0;
     mercury.arg_peri_base = 29.1241 * PI / 180.0; mercury.arg_peri_rate = 0.0;
     mercury.mean_anom_base = 174.796 * PI / 180.0; mercury.mean_anom_rate = (360.0 / 87.969) * PI / 180.0 / (24.0 * 3600.0);
+    mercury.surface_pressure = 1.0e-12; mercury.average_temp = 440.0; mercury.scattering_coef = 0.106;
+    mercury.eccentricity = 0.2056; mercury.inclination = 7.0 * PI / 180.0; mercury.orbital_period = 87.969 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(mercury);
     
     // 2: VENUS
@@ -70,6 +73,8 @@ void InitSolarSystem() {
     venus.lan_base = 76.67984255 * PI / 180.0; venus.lan_rate = -0.27769418 * PI / 180.0;
     venus.arg_peri_base = 54.884 * PI / 180.0; venus.arg_peri_rate = 0.0;
     venus.mean_anom_base = 50.115 * PI / 180.0; venus.mean_anom_rate = (360.0 / 224.701) * PI / 180.0 / (24.0 * 3600.0);
+    venus.surface_pressure = 92000.0; venus.average_temp = 737.0; venus.scattering_coef = 0.689;
+    venus.eccentricity = 0.0067; venus.inclination = 3.39 * PI / 180.0; venus.orbital_period = 224.7 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(venus);
 
     // 3: EARTH
@@ -88,6 +93,8 @@ void InitSolarSystem() {
     earth.lan_base = 0.0; earth.lan_rate = 0.0;
     earth.arg_peri_base = 114.20783 * PI / 180.0; earth.arg_peri_rate = 0.0;
     earth.mean_anom_base = 358.617 * PI / 180.0; earth.mean_anom_rate = (360.0 / 365.256) * PI / 180.0 / (24.0 * 3600.0);
+    earth.surface_pressure = 1013.25; earth.average_temp = 288.0; earth.scattering_coef = 0.306;
+    earth.eccentricity = 0.0167; earth.inclination = 0.0; earth.orbital_period = 365.256 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(earth);
     
     // 4: MOON (Luna)
@@ -112,6 +119,8 @@ void InitSolarSystem() {
     moon.lan_base = 125.08 * PI / 180.0; moon.lan_rate = -19.34 * PI / 180.0; // precesses 19.34 deg/year. Let's make it simpler
     moon.arg_peri_base = 318.15 * PI / 180.0; moon.arg_peri_rate = 0.0;
     moon.mean_anom_base = 115.3654 * PI / 180.0; moon.mean_anom_rate = (360.0 / 27.321) * PI / 180.0 / (24.0 * 3600.0);
+    moon.parent_index = 3; moon.surface_pressure = 1.0e-11; moon.average_temp = 250.0; moon.scattering_coef = 0.11;
+    moon.eccentricity = 0.0549; moon.inclination = 5.145 * PI / 180.0; moon.orbital_period = 27.321 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(moon);
     
     // 5: MARS
@@ -130,6 +139,8 @@ void InitSolarSystem() {
     mars.lan_base = 49.558 * PI / 180.0; mars.lan_rate = -0.294 * PI / 180.0;
     mars.arg_peri_base = 286.502 * PI / 180.0; mars.arg_peri_rate = 0.0;
     mars.mean_anom_base = 19.387 * PI / 180.0; mars.mean_anom_rate = (360.0 / 686.980) * PI / 180.0 / (24.0 * 3600.0);
+    mars.surface_pressure = 6.36; mars.average_temp = 210.0; mars.scattering_coef = 0.25;
+    mars.eccentricity = 0.0934; mars.inclination = 1.85 * PI / 180.0; mars.orbital_period = 686.98 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(mars);
     
     // 6: JUPITER
@@ -148,6 +159,8 @@ void InitSolarSystem() {
     jupiter.lan_base = 100.46 * PI / 180.0; jupiter.lan_rate = 0.17 * PI / 180.0;
     jupiter.arg_peri_base = 273.867 * PI / 180.0; jupiter.arg_peri_rate = 0.0;
     jupiter.mean_anom_base = 20.02 * PI / 180.0; jupiter.mean_anom_rate = (360.0 / 4332.589) * PI / 180.0 / (24.0 * 3600.0);
+    jupiter.surface_pressure = 1.0e6; jupiter.average_temp = 165.0; jupiter.scattering_coef = 0.343;
+    jupiter.eccentricity = 0.0485; jupiter.inclination = 1.3 * PI / 180.0; jupiter.orbital_period = 4332.59 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(jupiter);
     
     // 7: SATURN
@@ -166,6 +179,8 @@ void InitSolarSystem() {
     saturn.lan_base = 113.66 * PI / 180.0; saturn.lan_rate = -0.288 * PI / 180.0;
     saturn.arg_peri_base = 339.39 * PI / 180.0; saturn.arg_peri_rate = 0.0;
     saturn.mean_anom_base = 317.02 * PI / 180.0; saturn.mean_anom_rate = (360.0 / 10759.22) * PI / 180.0 / (24.0 * 3600.0);
+    saturn.surface_pressure = 1.0e6; saturn.average_temp = 134.0; saturn.scattering_coef = 0.342;
+    saturn.eccentricity = 0.0556; saturn.inclination = 2.48 * PI / 180.0; saturn.orbital_period = 10759.22 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(saturn);
     
     // 8: URANUS
@@ -184,6 +199,8 @@ void InitSolarSystem() {
     uranus.lan_base = 74.0 * PI / 180.0; uranus.lan_rate = 0.08 * PI / 180.0;
     uranus.arg_peri_base = 96.66 * PI / 180.0; uranus.arg_peri_rate = 0.0;
     uranus.mean_anom_base = 142.59 * PI / 180.0; uranus.mean_anom_rate = (360.0 / 30685.4) * PI / 180.0 / (24.0 * 3600.0);
+    uranus.surface_pressure = 1.0e6; uranus.average_temp = 76.0; uranus.scattering_coef = 0.3;
+    uranus.eccentricity = 0.0464; uranus.inclination = 0.77 * PI / 180.0; uranus.orbital_period = 30685.4 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(uranus);
     
     // 9: NEPTUNE
@@ -202,6 +219,8 @@ void InitSolarSystem() {
     neptune.lan_base = 131.78 * PI / 180.0; neptune.lan_rate = -0.006 * PI / 180.0;
     neptune.arg_peri_base = 273.187 * PI / 180.0; neptune.arg_peri_rate = 0.0;
     neptune.mean_anom_base = 256.228 * PI / 180.0; neptune.mean_anom_rate = (360.0 / 60189.0) * PI / 180.0 / (24.0 * 3600.0);
+    neptune.surface_pressure = 1.0e6; neptune.average_temp = 72.0; neptune.scattering_coef = 0.29;
+    neptune.eccentricity = 0.0095; neptune.inclination = 1.77 * PI / 180.0; neptune.orbital_period = 60189.0 * 24.0 * 3600.0;
     SOLAR_SYSTEM.push_back(neptune);
 
     // Compute SOI for all bodies (Laplace Sphere of Influence)
@@ -490,11 +509,14 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     // Now fetch the body reference - it's guaranteed to be the correct one for this frame's relative coords
     CelestialBody& current_body = SOLAR_SYSTEM[current_soi_index];
 
-    if (state.status == PRE_LAUNCH) {
+    bool on_ground = false;
+    if (state.status == PRE_LAUNCH || state.status == LANDED) {
         if (input.throttle > 0.01) {
-             state.status = ASCEND;
-             state.mission_msg = "LIFTOFF!";
+            if (state.status == PRE_LAUNCH) state.mission_msg = "LIFTOFF!";
+            else state.mission_msg = "TOUCHDOWN TO LIFTOFF!";
+            state.status = ASCEND;
         } else {
+            on_ground = true;
             // Calculate current rotation (Axial Tilt + Rotation)
             double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
             Quat rot = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
@@ -515,34 +537,6 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
             state.vz = (double)world_v.z;
             state.altitude = 0;
             state.velocity = 0; state.local_vx = 0;
-            return;
-        }
-    }
-    if (state.status == LANDED) {
-        if (input.throttle > 0.01) {
-            state.status = ASCEND;
-            state.mission_msg = "TOUCHDOWN TO LIFTOFF!";
-        } else {
-            double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
-            Quat rot = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
-            Quat tilt = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)current_body.axial_tilt);
-            Quat full_rot = tilt * rot;
-            
-            Vec3 local_pos((float)state.surf_px, (float)state.surf_py, (float)state.surf_pz);
-            Vec3 world_pos = full_rot.rotate(local_pos);
-            state.px = (double)world_pos.x;
-            state.py = (double)world_pos.y;
-            state.pz = (double)world_pos.z;
-            
-            double omega = (2.0 * PI) / current_body.rotation_period;
-            Vec3 ang_vel_world = full_rot.rotate(Vec3(0, 0, (float)omega));
-            Vec3 world_v = ang_vel_world.cross(world_pos);
-            state.vx = (double)world_v.x;
-            state.vy = (double)world_v.y;
-            state.vz = (double)world_v.z;
-            state.altitude = 0;
-            state.velocity = 0; state.local_vx = 0;
-            return;
         }
     }
     if (state.status == CRASHED) {
@@ -604,13 +598,18 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     Nx /= N_mag_geo; Ny /= N_mag_geo; Nz /= N_mag_geo;
 
     // Angular Motion Integration (3D Quaternion based)
-    if (!state.attitude_initialized) {
+    if (!state.attitude_initialized || state.status == PRE_LAUNCH) {
         Vec3 initialUp = Vec3((float)Ux, (float)Uy, (float)Uz);
         Vec3 defaultUp(0, 1, 0);
         Vec3 axis = defaultUp.cross(initialUp);
         float dot = defaultUp.dot(initialUp);
         Quat base;
-        if (axis.length() > 1e-6f) base = Quat::fromAxisAngle(axis.normalized(), std::acos(std::fmax(-1.0f, std::fmin(1.0f, dot))));
+        if (axis.length() > 1e-6f) {
+            base = Quat::fromAxisAngle(axis.normalized(), std::acos(std::fmax(-1.0f, std::fmin(1.0f, dot))));
+        } else if (dot < -0.99f) {
+            // 180 degree flip case (InitialUp is opposite to defaultUp)
+            base = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)PI);
+        }
         Quat q_pitch = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)state.angle); 
         Quat q_yaw = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)state.angle_z);
         Quat q_roll = Quat::fromAxisAngle(Vec3(0, 1, 0), (float)state.angle_roll);
@@ -631,6 +630,8 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
     double Ft_x = state.thrust_power * thrust_dir.x;
     double Ft_y = state.thrust_power * thrust_dir.y;
     double Ft_z = state.thrust_power * thrust_dir.z;
+
+    if (on_ground) return;
 
     // 3. Aerodynamic Drag & RK4 Integration
     double v_sq = state.vx * state.vx + state.vy * state.vy + state.vz * state.vz;
@@ -769,7 +770,20 @@ void Update(RocketState& state, const RocketConfig& config, const ControlInput& 
                 state.ang_vel = 0; state.ang_vel_z = 0; state.ang_vel_roll = 0;
             }
         }
-    } else state.altitude = current_alt_f;
+    } else {
+        state.altitude = current_alt_f;
+        // UPDATE SUB-SATELLITE POINT IN ROTATING FRAME FOR REAL-TIME LAT/LON
+        double theta = current_body.prime_meridian_epoch + (state.sim_time * 2.0 * PI / current_body.rotation_period);
+        Quat rot = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
+        Quat tilt = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)current_body.axial_tilt);
+        Quat inv_full_rot = (tilt * rot).conjugate();
+        
+        // Project current relative position into the planet's fixed rotating frame
+        Vec3 local_rel = inv_full_rot.rotate(Vec3((float)state.px, (float)state.py, (float)state.pz));
+        state.surf_px = (double)local_rel.x;
+        state.surf_py = (double)local_rel.y;
+        state.surf_pz = (double)local_rel.z;
+    }
 
     // F. Final Angular Velocity Updates and Legacy Sync
     double base_moi = 50000.0;

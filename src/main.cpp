@@ -111,10 +111,10 @@ int main() {
 
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     return -1;
-  // ：开启透明度混合
+  // Enable transparency blending
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  // 激活硬件级多重采样抗锯齿
+  // Enable hardware multisampling
   glEnable(GL_MULTISAMPLE);
   renderer = new Renderer();
   
@@ -124,191 +124,165 @@ int main() {
   orbit_predictor.Start();
 
   // =========================================================
-  // 主菜单阶段：显示启动菜单
+  // Main Menu Phase: Show Startup Menu
+  // =========================================================
+  // =========================================================
+  // 全局游戏状态 (Global Game State)
+  // =========================================================
+  AgencyState agency_state;
+  FactorySystem factory;
+  bool agency_is_init = false;
+
+  // =========================================================
+  // 游戏主循环 (Main State Machine Loop)
   // =========================================================
   MenuSystem::MenuState menu_state;
-  menu_state.has_save = SaveSystem::HasSaveFile();
+  while (!glfwWindowShouldClose(window)) {
+  // Check Save File
+      menu_state.has_save = SaveSystem::HasSaveFile();
+      if (menu_state.has_save) {
+          SaveSystem::GetSaveInfo(menu_state.save_time, menu_state.save_parts);
+      } else {
+          menu_state.save_time = 0; menu_state.save_parts = 0;
+      }
+      
+      MenuSystem::MenuChoice menu_choice = MenuSystem::MENU_NONE;
+      bool up_pressed = false, down_pressed = false, left_pressed = false, right_pressed = false, enter_pressed = false;
   
-  if (menu_state.has_save) {
-      SaveSystem::GetSaveInfo(menu_state.save_time, menu_state.save_parts);
-  }
   
-  MenuSystem::MenuChoice menu_choice = MenuSystem::MENU_NONE;
-  bool up_pressed = false, down_pressed = false, enter_pressed = false;
-  
-  // 主菜单循环
-  while (menu_choice == MenuSystem::MENU_NONE && !glfwWindowShouldClose(window)) {
+  // 主菜单/设置循环
+  while (menu_choice != MenuSystem::MENU_EXIT && !glfwWindowShouldClose(window)) {
       glfwPollEvents();
       
-      if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+      if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS && menu_choice != MenuSystem::MENU_SETTINGS) {
           glfwSetWindowShouldClose(window, true);
           break;
       }
       
-      // 获取鼠标状态
       double mx, my;
       glfwGetCursorPos(window, &mx, &my);
       int ww, wh;
       glfwGetWindowSize(window, &ww, &wh);
-      // 转换为渲染坐标 [-1, 1]
       float mouse_x = (float)(mx / ww * 2.0 - 1.0);
       float mouse_y = (float)(1.0 - my / wh * 2.0);
       bool mouse_left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
 
-      menu_choice = MenuSystem::HandleMenuInput(window, menu_state, up_pressed, down_pressed, enter_pressed, mouse_x, mouse_y, mouse_left);
+      if (menu_choice == MenuSystem::MENU_SETTINGS) {
+          menu_choice = MenuSystem::HandleSettingsInput(window, menu_state, up_pressed, down_pressed, left_pressed, right_pressed, enter_pressed, mouse_x, mouse_y, mouse_left);
+      } else {
+          menu_choice = MenuSystem::HandleMenuInput(window, menu_state, up_pressed, down_pressed, enter_pressed, mouse_x, mouse_y, mouse_left);
+          if (menu_choice != MenuSystem::MENU_NONE && menu_choice != MenuSystem::MENU_SETTINGS && menu_choice != MenuSystem::MENU_EXIT) {
+              // Valid choice to move to Hub or Game
+              break;
+          }
+      }
       
       glClearColor(0.02f, 0.03f, 0.08f, 1.0f);
       glClear(GL_COLOR_BUFFER_BIT);
       renderer->beginFrame();
-      MenuSystem::DrawMainMenu(renderer, menu_state, (float)glfwGetTime());
+      if (menu_choice == MenuSystem::MENU_SETTINGS) {
+          MenuSystem::DrawSettingsMenu(renderer, menu_state, (float)glfwGetTime());
+      } else {
+          MenuSystem::DrawMainMenu(renderer, menu_state, (float)glfwGetTime());
+      }
       renderer->endFrame();
       glfwSwapBuffers(window);
       
       std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
   
-  // 处理菜单选择
-  if (menu_choice == MenuSystem::MENU_EXIT || glfwWindowShouldClose(window)) {
-      delete renderer;
-      glfwTerminate();
-      return 0;
-  }
-  
-  bool load_from_save = (menu_choice == MenuSystem::MENU_CONTINUE);
-  
-  if (menu_choice == MenuSystem::MENU_NEW_GAME && menu_state.has_save) {
-      SaveSystem::DeleteSaveFile();
-  }
-
-  // =========================================================
-  // 航天局总览阶段 (Agency Hub)
-  // =========================================================
-  AgencyState agency_state;
-  FactorySystem factory;
-
-  bool agency_loaded = false;
-  if (load_from_save) {
-      agency_loaded = SaveSystem::LoadAgencyFactory(agency_state, factory);
-  }
-
-  if (!agency_loaded) {
-      // Starter resources (ONLY FOR NEW GAME)
-      agency_state.addItem(ITEM_IRON_ORE, 50);
-      agency_state.addItem(ITEM_COPPER_ORE, 30);
-      agency_state.addItem(ITEM_COAL, 40);
-      agency_state.addItem(ITEM_STEEL, 10);
-      agency_state.addItem(PART_ENGINE, 2);
-      agency_state.addItem(PART_FUEL_TANK, 4);
-      agency_state.addItem(PART_NOSECONE, 2);
-      agency_state.addItem(PART_STRUCTURAL, 5);
-      agency_state.addItem(PART_COMMAND_POD, 1);
-      // Starter factory buildings
-      factory.addNode(NODE_MINER, 0, 0);    // Iron miner (ID 1)
-      factory.addNode(NODE_MINER, 1, 0);    // Coal miner (ID 2)
-      factory.addNode(NODE_SMELTER, 3, 0);  // Smelter (ID 3)
-      factory.addNode(NODE_STORAGE, 4, 1);  // Storage (ID 4)
-      
-      // Starter belts
-      ConveyorBelt b1; b1.from_node_id = 1; b1.to_node_id = 3;
-      factory.belts.push_back(b1);
-      ConveyorBelt b2; b2.from_node_id = 2; b2.to_node_id = 3;
-      factory.belts.push_back(b2);
-      ConveyorBelt b3; b3.from_node_id = 3; b3.to_node_id = 4;
-      factory.belts.push_back(b3);
-  }
-  
-  while (menu_choice != MenuSystem::MENU_NONE && !glfwWindowShouldClose(window)) {
-      if (menu_choice == MenuSystem::MENU_AGENCY_HUB) {
-          while (menu_choice == MenuSystem::MENU_AGENCY_HUB && !glfwWindowShouldClose(window)) {
-              glfwPollEvents();
-              double mx, my;
-              glfwGetCursorPos(window, &mx, &my);
-              int ww, wh;
-              glfwGetWindowSize(window, &ww, &wh);
-              float mouse_x = (float)(mx / ww * 2.0 - 1.0);
-              float mouse_y = (float)(1.0 - my / wh * 2.0);
-              bool mouse_left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-
-              menu_choice = MenuSystem::HandleAgencyHubInput(window, menu_state, up_pressed, down_pressed, enter_pressed, mouse_x, mouse_y, mouse_left);
-              
-              // Tick factory
-              factory.tick(0.016f, agency_state);
-              
-              glClearColor(0.02f, 0.03f, 0.08f, 1.0f);
-              glClear(GL_COLOR_BUFFER_BIT);
-              renderer->beginFrame();
-              MenuSystem::DrawAgencyHub(renderer, menu_state, agency_state, (float)glfwGetTime(), factory);
-              renderer->endFrame();
-              glfwSwapBuffers(window);
-              std::this_thread::sleep_for(std::chrono::milliseconds(16));
-          }
-          // Always save when leaving Hub
-          SaveSystem::SaveAgencyFactory(agency_state, factory);
-      }
-      
-      // Factory construction mode
-      if (menu_choice == MenuSystem::MENU_FACTORY) {
-          FactoryUIState factory_ui;
-          g_scroll_y = 0.0f;
-          bool in_factory = true;
-          while (in_factory && !glfwWindowShouldClose(window)) {
-              glfwPollEvents();
-              
-              double fmx, fmy;
-              glfwGetCursorPos(window, &fmx, &fmy);
-              int fww, fwh;
-              glfwGetWindowSize(window, &fww, &fwh);
-              float mouse_x = (float)(fmx / fww * 2.0 - 1.0);
-              float mouse_y = (float)(1.0 - fmy / fwh * 2.0);
-              bool mouse_left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-              float scroll = g_scroll_y;
-              g_scroll_y = 0.0f;
-              
-              in_factory = HandleFactoryInput(window, factory_ui, factory, agency_state, mouse_x, mouse_y, mouse_left, scroll);
-              
-              // Tick factory production
-              factory.tick(0.016f, agency_state);
-              
-              glClearColor(0.04f, 0.05f, 0.07f, 1.0f);
-              glClear(GL_COLOR_BUFFER_BIT);
-              renderer->beginFrame();
-              DrawFactoryUI(renderer, factory_ui, factory, agency_state, (float)glfwGetTime());
-              renderer->endFrame();
-              glfwSwapBuffers(window);
-              
-              std::this_thread::sleep_for(std::chrono::milliseconds(16));
-          }
-          // Save and return to hub
-          SaveSystem::SaveAgencyFactory(agency_state, factory);
-          menu_choice = MenuSystem::MENU_AGENCY_HUB;
-          // Wait for ESC release to prevent triggering Hub exit immediately
-          while (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-              glfwPollEvents();
-          }
-      }
-      
-      if (menu_choice == MenuSystem::MENU_NONE) {
-          // Returning to main menu or popping out
+      // Handle Menu Exit
+      if (menu_choice == MenuSystem::MENU_EXIT || glfwWindowShouldClose(window)) {
           break;
       }
       
-      // If we got here and it's VAB or CONTINUE, break out of the management loop
-      // to proceed to the 3D workshop/flight simulation
-      if (menu_choice == MenuSystem::MENU_VAB || menu_choice == MenuSystem::MENU_CONTINUE) {
-          break;
-      }
-  }
-  
-  // Final exit check
-  if (menu_choice == MenuSystem::MENU_NONE || glfwWindowShouldClose(window)) {
-      if (menu_choice != MenuSystem::MENU_NONE) {
-          // This must be rocket flight/building mode if we continue below
+      bool load_from_save = (menu_choice == MenuSystem::MENU_CONTINUE);
+      
+      if (!load_from_save) {
+          // 如果是新游戏且有旧档，询问/删除 (逻辑简化：直接删)
+          if (SaveSystem::HasSaveFile()) SaveSystem::DeleteSaveFile();
+          // 重置 Agency
+          agency_state = AgencyState();
+          factory = FactorySystem();
+          
+          // Starter resources
+          agency_state.addItem(ITEM_IRON_ORE, 50);
+          agency_state.addItem(ITEM_COPPER_ORE, 30);
+          agency_state.addItem(ITEM_COAL, 40);
+          agency_state.addItem(ITEM_STEEL, 10);
+          agency_state.addItem(PART_ENGINE, 2);
+          agency_state.addItem(PART_FUEL_TANK, 4);
+          agency_state.addItem(PART_NOSECONE, 2);
+          agency_state.addItem(PART_STRUCTURAL, 5);
+          agency_state.addItem(PART_COMMAND_POD, 1);
+          factory.addNode(NODE_MINER, 0, 0);
+          factory.addNode(NODE_MINER, 1, 0);
+          factory.addNode(NODE_SMELTER, 3, 0);
+          factory.addNode(NODE_STORAGE, 4, 1);
+          ConveyorBelt b1; b1.from_node_id = 1; b1.to_node_id = 3; factory.belts.push_back(b1);
+          ConveyorBelt b2; b2.from_node_id = 2; b2.to_node_id = 3; factory.belts.push_back(b2);
+          ConveyorBelt b3; b3.from_node_id = 3; b3.to_node_id = 4; factory.belts.push_back(b3);
+          agency_is_init = true;
       } else {
-          delete renderer;
-          glfwTerminate();
-          return 0;
+          // 加载存档
+          SaveSystem::LoadAgencyFactory(agency_state, factory);
+          agency_is_init = true;
       }
-  }
+  
+      // Agency / Factory Loop
+      while (menu_choice != MenuSystem::MENU_NONE && !glfwWindowShouldClose(window)) {
+          if (menu_choice == MenuSystem::MENU_AGENCY_HUB) {
+              while (menu_choice == MenuSystem::MENU_AGENCY_HUB && !glfwWindowShouldClose(window)) {
+                  glfwPollEvents();
+                  double mx, my; glfwGetCursorPos(window, &mx, &my);
+                  int ww, wh; glfwGetWindowSize(window, &ww, &wh);
+                  float mouse_x = (float)(mx / ww * 2.0 - 1.0);
+                  float mouse_y = (float)(1.0 - my / wh * 2.0);
+                  bool mouse_left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+
+                  menu_choice = MenuSystem::HandleAgencyHubInput(window, menu_state, up_pressed, down_pressed, enter_pressed, mouse_x, mouse_y, mouse_left);
+                  factory.tick(0.016f, agency_state);
+                  
+                  glClearColor(0.02f, 0.03f, 0.08f, 1.0f); glClear(GL_COLOR_BUFFER_BIT);
+                  renderer->beginFrame();
+                  MenuSystem::DrawAgencyHub(renderer, menu_state, agency_state, (float)glfwGetTime(), factory);
+                  renderer->endFrame();
+                  glfwSwapBuffers(window);
+                  std::this_thread::sleep_for(std::chrono::milliseconds(16));
+              }
+              SaveSystem::SaveAgencyFactory(agency_state, factory);
+          }
+          
+          if (menu_choice == MenuSystem::MENU_FACTORY) {
+              FactoryUIState factory_ui; g_scroll_y = 0.0f; bool in_factory = true;
+              while (in_factory && !glfwWindowShouldClose(window)) {
+                  glfwPollEvents();
+                  double fmx, fmy; glfwGetCursorPos(window, &fmx, &fmy);
+                  int fww, fwh; glfwGetWindowSize(window, &fww, &fwh);
+                  float mouse_x = (float)(fmx / fww * 2.0 - 1.0);
+                  float mouse_y = (float)(1.0 - fmy / fwh * 2.0);
+                  bool mouse_left = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                  float scroll = g_scroll_y; g_scroll_y = 0.0f;
+                  in_factory = HandleFactoryInput(window, factory_ui, factory, agency_state, mouse_x, mouse_y, mouse_left, scroll);
+                  factory.tick(0.016f, agency_state);
+                  glClearColor(0.04f, 0.05f, 0.07f, 1.0f); glClear(GL_COLOR_BUFFER_BIT);
+                  renderer->beginFrame(); DrawFactoryUI(renderer, factory_ui, factory, agency_state, (float)glfwGetTime()); renderer->endFrame();
+                  glfwSwapBuffers(window); std::this_thread::sleep_for(std::chrono::milliseconds(16));
+              }
+              SaveSystem::SaveAgencyFactory(agency_state, factory);
+              menu_choice = MenuSystem::MENU_AGENCY_HUB;
+              while (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwPollEvents();
+          }
+          
+          if (menu_choice == MenuSystem::MENU_VAB || menu_choice == MenuSystem::MENU_CONTINUE) {
+              break; // Proceed to 3D phase
+          }
+      }
+      
+      if (menu_choice == MenuSystem::MENU_NONE || glfwWindowShouldClose(window)) {
+          continue; // Back to Main Menu 
+      }
+  
   
   // Transition to Rocket Building/Flight
   load_from_save = (menu_choice == MenuSystem::MENU_CONTINUE);
@@ -325,7 +299,7 @@ int main() {
   Mesh rocketNose = MeshGen::cone(32, 1.0f, 1.0f);
   Mesh rocketBox  = MeshGen::box(1.0f, 1.0f, 1.0f);
   
-  // 尝试加载发射台模型 (如果存在)
+  // Try to load launch pad model
   Mesh launchPadMesh = ModelLoader::loadOBJ("assets/launch_pad.obj");
   bool has_launch_pad = (launchPadMesh.indexCount > 0);
 
@@ -732,9 +706,9 @@ int main() {
           rocket_state.fuel = rocket_state.stage_fuels[0];
       }
       
-      // Initialize surface coordinates exactly at the planet's radius
-      rocket_state.surf_px = 0.0;
-      rocket_state.surf_pz = 0.0;
+      // Calculate initial surface coordinates from launch latitude/longitude
+      double lat_rad = rocket_state.launch_latitude * PI / 180.0;
+      double lon_rad = rocket_state.launch_longitude * PI / 180.0;
 
       float lowest_y = 0.0f;
       if (!builder_state.assembly.parts.empty()) {
@@ -743,8 +717,25 @@ int main() {
               lowest_y = std::min(lowest_y, p.pos.y);
           }
       }
-      // Set CoM altitude so the bottom-most part is on the surface
-      rocket_state.surf_py = SOLAR_SYSTEM[current_soi_index].radius - lowest_y;
+      // Distance from planet center to CoM
+      double R = SOLAR_SYSTEM[current_soi_index].radius - (double)lowest_y;
+
+      // Z is the North-South axis, XY is the equatorial plane
+      rocket_state.surf_px = R * cos(lat_rad) * cos(lon_rad);
+      rocket_state.surf_py = R * cos(lat_rad) * sin(lon_rad);
+      rocket_state.surf_pz = R * sin(lat_rad);
+
+      // Initialize inertial coordinates immediately for the first frame
+      CelestialBody& body = SOLAR_SYSTEM[current_soi_index];
+      double theta = body.prime_meridian_epoch; // sim_time = 0
+      Quat rot = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
+      Quat tilt = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)body.axial_tilt);
+      Quat full_rot = tilt * rot;
+      
+      Vec3 world_pos = full_rot.rotate(Vec3((float)rocket_state.surf_px, (float)rocket_state.surf_py, (float)rocket_state.surf_pz));
+      rocket_state.px = (double)world_pos.x;
+      rocket_state.py = (double)world_pos.y;
+      rocket_state.pz = (double)world_pos.z;
   }
 
   // Keep a reference to the assembly for rendering
@@ -754,6 +745,12 @@ int main() {
   static bool c_was_pressed = false;
   // 相机参数
   Quat cam_quat; // 自由模式四元数 (用于全景和追踪微调)
+  
+  // --- Galaxy Info UI State ---
+  static bool show_galaxy_info = false;
+  static int selected_body_idx = -1;
+  static int expanded_planet_idx = -1;
+  static bool hlmb_prev_galaxy = false;
   float orbit_yaw = 0.0f;   // 专用轨道视角偏航
   float orbit_pitch = 0.4f; // 专用轨道视角俯仰
   float cam_zoom_chase = 1.0f; // 轨道/跟踪模式缩放
@@ -2723,32 +2720,39 @@ int main() {
       }
 
       // ===== 发射台渲染 (Launch Pad Generation / Rendering) =====
-      if (rocket_state.altitude < 2000.0 && current_soi_index == 3) {
-          CelestialBody& earth = SOLAR_SYSTEM[3];
+      if (rocket_state.altitude < 2000.0) {
+          CelestialBody& body = SOLAR_SYSTEM[current_soi_index];
           
-          // Launch pad should rotate with the Earth
-          double theta = earth.prime_meridian_epoch + (rocket_state.sim_time * 2.0 * PI / earth.rotation_period);
-          double cos_t = std::cos(theta);
-          double sin_t = std::sin(theta);
+          // Launch pad should rotate with the body (Axial Tilt + Rotation)
+          double theta = body.prime_meridian_epoch + (rocket_state.sim_time * 2.0 * PI / body.rotation_period);
+          Quat rot = Quat::fromAxisAngle(Vec3(0, 0, 1), (float)theta);
+          Quat tilt = Quat::fromAxisAngle(Vec3(1, 0, 0), (float)body.axial_tilt);
+          Quat full_rot = tilt * rot;
           
-          // Original surface position (0, R, 0)
-          double s_px = 0, s_py = earth.radius, s_pz = 0;
-          // Rotate to inertial
-          double i_px = s_px * cos_t - s_py * sin_t;
-          double i_py = s_px * sin_t + s_py * cos_t;
-          double i_pz = s_pz;
+          // Use rocket's launch site coordinates
+          Vec3 s_pos((float)rocket_state.surf_px, (float)rocket_state.surf_py, (float)rocket_state.surf_pz);
+          // Normalized local up vector
+          Vec3 localUp = s_pos.normalized();
+          // Position on surface (exactly at radius)
+          Vec3 s_surf = localUp * (float)body.radius;
+          
+          // Rotate to inertial frame
+          Vec3 i_surf = full_rot.rotate(s_surf);
+          Vec3 i_up   = full_rot.rotate(localUp);
 
           Vec3 padCenter(
-              (float)((earth.px + i_px) * ws_d - ro_x), 
-              (float)((earth.py + i_py) * ws_d - ro_y), 
-              (float)((earth.pz + i_pz) * ws_d - ro_z)
+              (float)((body.px + (double)i_surf.x) * ws_d - ro_x), 
+              (float)((body.py + (double)i_surf.y) * ws_d - ro_y), 
+              (float)((body.pz + (double)i_surf.z) * ws_d - ro_z)
           );
           
-          // Calculate local up vector at pad
-          Vec3 padUp((float)(i_px / earth.radius), (float)(i_py / earth.radius), (float)(i_pz / earth.radius));
-          // Calculate a local right/forward to orient the pad (perpendicular to padUp in plane)
-          Vec3 padRight( (float)-cos_t, (float)-sin_t, 0.0f );
-          Vec3 padForward = padUp.cross(padRight);
+          // Calculate local orientation for the pad
+          Vec3 padUp = i_up;
+          // Calculate a local right/forward to orient the pad
+          Vec3 defaultRight(1, 0, 0);
+          if (fabs(padUp.dot(defaultRight)) > 0.9f) defaultRight = Vec3(0, 1, 0);
+          Vec3 padRight = padUp.cross(defaultRight).normalized();
+          Vec3 padForward = padUp.cross(padRight).normalized();
           
           // Construct rotation matrix for the pad to face "up"
           Mat4 padRot;
@@ -2924,105 +2928,92 @@ int main() {
         current_vvel = (int)rel_vvel_real;
     }
 
-    // --- 1. 速度计 (Velocity Gauge) ---
-    float max_gauge_vel = 3000.0f;
-    float vel_ratio = (float)min(1.0, current_vel / max_gauge_vel);
-    renderer->addRect(gauge_vel_x, gauge_y_center, gauge_w * 1.2f,
-                      gauge_h + 0.02f, 0.1f, 0.1f, 0.1f, 0.5f * hud_opacity);
-    float r_vel = vel_ratio * 2.0f;
-    if (r_vel > 1.0f)
-      r_vel = 1.0f;
-    float g_vel = (1.0f - vel_ratio) * 2.0f;
-    if (g_vel > 1.0f)
-      g_vel = 1.0f;
-    float fill_h_vel = gauge_h * vel_ratio;
-    renderer->addRect(
-        gauge_vel_x, gauge_y_center - (gauge_h - fill_h_vel) / 2.0f,
-        gauge_w * 0.8f, fill_h_vel, r_vel, g_vel, 0.0f, hud_opacity);
-
-    // --- 2. 高度计 (Altitude Gauge) ---
-    float max_gauge_alt = 100000.0f;
-    float alt_ratio = (float)min(1.0, current_alt / max_gauge_alt);
-    renderer->addRect(gauge_alt_x, gauge_y_center, gauge_w * 1.2f,
-                      gauge_h + 0.02f, 0.1f, 0.1f, 0.1f, 0.5f * hud_opacity);
-    float fill_h_alt = gauge_h * alt_ratio;
-    renderer->addRect(gauge_alt_x,
-                      gauge_y_center - (gauge_h - fill_h_alt) / 2.0f,
-                      gauge_w * 0.8f, fill_h_alt, alt_ratio * 0.8f,
-                      0.3f + alt_ratio * 0.7f, 1.0f, hud_opacity);
-
-    // --- 3. 燃油计 (Fuel Gauge) ---
-    double current_fuel = rocket_state.fuel;
-    float max_gauge_fuel = 100000.0f; // 对应火箭初始化时的 100 吨满载燃料
-    float fuel_ratio = (float)max(0.0, min(1.0, current_fuel / max_gauge_fuel));
-
-    // 背景槽
-    renderer->addRect(gauge_fuel_x, gauge_y_center, gauge_w * 1.2f,
-                      gauge_h + 0.02f, 0.1f, 0.1f, 0.1f, 0.5f * hud_opacity);
-
-    // 动态颜色：满燃料为绿，耗尽前变红
-    float r_fuel = (1.0f - fuel_ratio) * 2.0f;
-    if (r_fuel > 1.0f)
-      r_fuel = 1.0f;
-    float g_fuel = fuel_ratio * 2.0f;
-    if (g_fuel > 1.0f)
-      g_fuel = 1.0f;
-
-    float fill_h_fuel = gauge_h * fuel_ratio;
-    renderer->addRect(
-        gauge_fuel_x, gauge_y_center - (gauge_h - fill_h_fuel) / 2.0f,
-        gauge_w * 0.8f, fill_h_fuel, r_fuel, g_fuel, 0.1f, hud_opacity);
-
-    // --- 4. 装饰性刻度线与标签框 ---
-    int num_ticks = 10;
-    for (int i = 0; i <= num_ticks; i++) {
-      float tick_ratio = (float)i / num_ticks;
-      float tick_y = (gauge_y_center - gauge_h / 2.0f) + gauge_h * tick_ratio;
-      float tick_w = 0.02f;
-      float tick_h = 0.003f;
-      float alpha = (i % 5 == 0) ? 0.8f : 0.4f;
-      if (i % 5 == 0)
-        tick_w *= 1.5f;
-
-      renderer->addRect(gauge_vel_x - gauge_w, tick_y, tick_w, tick_h, 1.0f,
-                        1.0f, 1.0f, alpha * hud_opacity);
-      renderer->addRect(gauge_alt_x + gauge_w, tick_y, tick_w, tick_h, 1.0f,
-                        1.0f, 1.0f, alpha * hud_opacity);
-      renderer->addRect(gauge_fuel_x + gauge_w, tick_y, tick_w, tick_h, 1.0f,
-                        1.0f, 1.0f, alpha * hud_opacity);
-    }
-
-    // 底部颜色标签框
-    renderer->addRect(gauge_vel_x, gauge_y_center - gauge_h / 2.0f - 0.03f,
-                      gauge_w * 2.0f, 0.03f, 0.8f, 0.2f, 0.2f,
-                      hud_opacity); // 红: VEL
-    renderer->addRect(gauge_alt_x, gauge_y_center - gauge_h / 2.0f - 0.03f,
-                      gauge_w * 2.0f, 0.03f, 0.2f, 0.5f, 0.9f,
-                      hud_opacity); // 蓝: ALT
-    renderer->addRect(gauge_fuel_x, gauge_y_center - gauge_h / 2.0f - 0.03f,
-                      gauge_w * 2.0f, 0.03f, 0.9f, 0.6f, 0.1f,
-                      hud_opacity); // 橙: FUEL
-    // --- Telemetry Readings (Right Side - Final Refinement) ---
-    float num_size = 0.025f; // Even smaller
-    float num_x = 0.85f;     // Far right
+    // --- HUD Shared Variables ---
+    float num_size = 0.025f;
+    float num_x = 0.85f;
     float label_x = num_x + 0.065f; 
     float bg_w = 0.22f;
     float bg_h = 0.05f;
+    double current_fuel = rocket_state.fuel;
 
-    // 速度读数 + m/s
-    renderer->addRect(num_x, 0.7f, bg_w, bg_h, 0.0f, 0.0f, 0.0f, 0.5f);
-    renderer->drawInt(num_x + 0.05f, 0.7f, (int)current_vel, num_size, 1.0f, 0.4f, 0.4f, hud_opacity, Renderer::RIGHT);
-    renderer->drawText(label_x, 0.7f, "m/s", num_size * 0.7f, 1.0f, 0.6f, 0.6f, hud_opacity);
+    // --- New Detailed Telemetry HUD (Bottom-Left) ---
+    float tl_x = -0.98f;
+    float tl_y = -0.65f;
+    float tl_size = 0.011f;
+    float tl_spacing = 0.025f;
+    char tl_buf[128];
 
-    // 海拔读数 + m 或 km
-    renderer->addRect(num_x, 0.55f, bg_w, bg_h, 0.0f, 0.0f, 0.0f, 0.5f);
-    if (current_alt > 10000) {
-      renderer->drawInt(num_x + 0.05f, 0.55f, (int)(current_alt / 1000.0), num_size, 0.4f, 0.7f, 1.0f, hud_opacity, Renderer::RIGHT);
-      renderer->drawText(label_x, 0.55f, "km", num_size * 0.7f, 0.5f, 0.8f, 1.0f, hud_opacity);
-    } else {
-      renderer->drawInt(num_x + 0.05f, 0.55f, (int)current_alt, num_size, 0.4f, 0.7f, 1.0f, hud_opacity, Renderer::RIGHT);
-      renderer->drawText(label_x, 0.55f, "m", num_size * 0.7f, 0.5f, 0.8f, 1.0f, hud_opacity);
+    auto draw_tl_line = [&](const char* label, const char* value, float r, float g, float b) {
+        renderer->drawText(tl_x, tl_y, label, tl_size, 0.7f, 0.7f, 0.7f, hud_opacity);
+        renderer->drawText(tl_x + 0.18f, tl_y, value, tl_size, r, g, b, hud_opacity);
+        tl_y -= tl_spacing;
+    };
+
+    // 1. Latitude and Longitude
+    double planet_r = SOLAR_SYSTEM[current_soi_index].radius;
+    double lat = asin(fmax(-1.0, fmin(1.0, rocket_state.surf_pz / planet_r))) * 180.0 / PI;
+    double lon = atan2(rocket_state.surf_py, rocket_state.surf_px) * 180.0 / PI;
+    snprintf(tl_buf, sizeof(tl_buf), "%.4f, %.4f", lat, lon);
+    draw_tl_line("LAT/LON:", tl_buf, 0.4f, 0.8f, 1.0f);
+
+    // 1b. Speed and Altitude
+    snprintf(tl_buf, sizeof(tl_buf), "%.2f m/s", current_vel);
+    draw_tl_line("SPEED:", tl_buf, 1.0f, 1.0f, 0.4f);
+    if (current_alt > 100000.0)
+        snprintf(tl_buf, sizeof(tl_buf), "%.2f km", current_alt / 1000.0);
+    else
+        snprintf(tl_buf, sizeof(tl_buf), "%.1f m", current_alt);
+    draw_tl_line("ALTITUDE:", tl_buf, 0.4f, 1.0f, 0.8f);
+
+    // 2. Thrust and TWR
+    double current_thrust = rocket_state.thrust_power;
+    double g_local = 9.80665 * pow(6371000.0 / (6371000.0 + current_alt), 2);
+    double total_mass = assembly.total_dry_mass + rocket_state.fuel;
+    double twr = (total_mass > 0) ? current_thrust / (total_mass * g_local) : 0;
+    snprintf(tl_buf, sizeof(tl_buf), "%.2f kN (TWR: %.2f)", current_thrust / 1000.0, twr);
+    draw_tl_line("THRUST:", tl_buf, 1.0f, 0.6f, 0.2f);
+
+    // 3. Mass and Fuel
+    snprintf(tl_buf, sizeof(tl_buf), "%.1f t (Fuel: %.1f t)", total_mass / 1000.0, rocket_state.fuel / 1000.0);
+    draw_tl_line("MASS:", tl_buf, 0.8f, 0.8f, 0.8f);
+
+    // 4. Remaining Delta-V
+    double dv_rem = 0;
+    if (total_mass > assembly.total_dry_mass && assembly.avg_isp > 0) {
+        dv_rem = assembly.avg_isp * 9.80665 * log(total_mass / assembly.total_dry_mass);
     }
+    snprintf(tl_buf, sizeof(tl_buf), "%.1f m/s", dv_rem);
+    draw_tl_line("REMAIN DV:", tl_buf, 0.3f, 0.9f, 0.4f);
+
+    // 5. Gravity and Drag
+    double drag_mag = fabs(rocket_state.acceleration) * total_mass - current_thrust; // Rough estimate
+    if (drag_mag < 0) drag_mag = 0;
+    snprintf(tl_buf, sizeof(tl_buf), "%.3f m/s2 (Drag: %.1f N)", g_local, drag_mag);
+    draw_tl_line("GRAVITY:", tl_buf, 0.6f, 0.7f, 1.0f);
+
+    // 6. Orbital Elements
+    tl_y -= 0.015f; // Extra space for orbital section
+    renderer->drawText(tl_x, tl_y, "ORBITAL ELEMENTS:", tl_size, 0.5f, 0.9f, 1.0f, hud_opacity);
+    tl_y -= tl_spacing;
+
+    // Calculate elements (Simple 2D/3D approximation for HUD)
+    double mu = 3.986e14;
+    double r_mag = sqrt(rocket_state.px*rocket_state.px + rocket_state.py*rocket_state.py + rocket_state.pz*rocket_state.pz);
+    double v_sq = rocket_state.vx*rocket_state.vx + rocket_state.vy*rocket_state.vy + rocket_state.vz*rocket_state.vz;
+    double specific_energy = v_sq / 2.0 - mu / r_mag;
+    double a_val = -mu / (2.0 * specific_energy);
+    
+    Vec3 r_vec(rocket_state.px, rocket_state.py, rocket_state.pz);
+    Vec3 v_vec(rocket_state.vx, rocket_state.vy, rocket_state.vz);
+    Vec3 h_vec = r_vec.cross(v_vec);
+    double h_mag = h_vec.length();
+    double e_val = sqrt(1.0 + (2.0 * specific_energy * h_mag * h_mag) / (mu * mu));
+    double inc = acos(h_vec.z / h_mag) * 180.0 / PI;
+
+    snprintf(tl_buf, sizeof(tl_buf), "a: %.1f km, e: %.4f", a_val / 1000.0, e_val);
+    draw_tl_line("A/E:", tl_buf, 1.0f, 1.0f, 1.0f);
+    snprintf(tl_buf, sizeof(tl_buf), "i: %.2f deg", inc);
+    draw_tl_line("INC:", tl_buf, 1.0f, 1.0f, 1.0f);
 
     // 燃油读数 + kg
     renderer->addRect(num_x, 0.4f, bg_w, bg_h, 0.0f, 0.0f, 0.0f, 0.5f);
@@ -3318,6 +3309,151 @@ int main() {
         
         renderer->addRect(adv_btn_x, fa_btn_y, adv_btn_w, adv_btn_h, 0.8f, 0.4f, 0.2f, hover_fa ? 0.9f : 0.7f);
         renderer->drawText(adv_btn_x, fa_btn_y, "FLIGHT ASSIST", 0.012f, 1, 1, 1, 1.0f, true, Renderer::CENTER);
+
+        // --- Galaxy Info Button ---
+        float galaxy_btn_y = fa_btn_y - 0.06f;
+        bool hover_galaxy = (hmouse_x >= adv_btn_x - adv_btn_w/2 && hmouse_x <= adv_btn_x + adv_btn_w/2 && hmouse_y >= galaxy_btn_y - adv_btn_h/2 && hmouse_y <= galaxy_btn_y + adv_btn_h/2);
+        if (hover_galaxy && hlmb && !hlmb_prev) show_galaxy_info = !show_galaxy_info;
+        
+        renderer->addRect(adv_btn_x, galaxy_btn_y, adv_btn_w, adv_btn_h, 0.1f, 0.6f, 0.3f, hover_galaxy ? 0.9f : 0.7f);
+        renderer->drawText(adv_btn_x, galaxy_btn_y, "GALAXY INFO", 0.012f, 1, 1, 1, 1.0f, true, Renderer::CENTER);
+
+        if (show_galaxy_info) {
+            float bar_h = 0.12f;
+            float bar_y = 0.92f;
+            renderer->addRect(0, bar_y, 2.0f, bar_h, 0.05f, 0.05f, 0.08f, 0.9f);
+            renderer->addLine(-1.0f, bar_y - bar_h/2, 1.0f, bar_y - bar_h/2, 0.002f, 0.4f, 0.8f, 1.0f, 0.6f);
+            
+            float icon_start_x = -0.92f;
+            float icon_spacing = 0.12f;
+            float icon_r = 0.04f;
+            
+            // 1. Draw Suns and Planets (parent_index == -1)
+            int main_count = 0;
+            for (int i = 0; i < (int)SOLAR_SYSTEM.size(); i++) {
+                if (SOLAR_SYSTEM[i].parent_index != -1) continue;
+                
+                float ix = icon_start_x + main_count * icon_spacing;
+                bool hover_icon = (hmouse_x >= ix - icon_r && hmouse_x <= ix + icon_r && hmouse_y >= bar_y - icon_r && hmouse_y <= bar_y + icon_r);
+                
+                if (hover_icon && hlmb && !hlmb_prev) {
+                    selected_body_idx = i;
+                    // Logic: Planet click expands/collapses moons
+                    bool has_moons = false;
+                    for(int m=0; m<(int)SOLAR_SYSTEM.size(); m++) if(SOLAR_SYSTEM[m].parent_index == i) has_moons = true;
+                    
+                    if (has_moons) {
+                        if (expanded_planet_idx == i) expanded_planet_idx = -1;
+                        else expanded_planet_idx = i;
+                    }
+                }
+                
+                renderer->drawPlanetIcon(ix, bar_y, icon_r, SOLAR_SYSTEM[i], (float)glfwGetTime());
+                if (hover_icon || selected_body_idx == i) 
+                    renderer->addCircleOutline(ix, bar_y, icon_r * 1.1f, 0.003f, 0.4f, 0.8f, 1.0f, 1.0f);
+                
+                renderer->drawText(ix, bar_y - icon_r - 0.015f, SOLAR_SYSTEM[i].name.c_str(), 0.008f, 1, 1, 1, 1.0f, true, Renderer::CENTER);
+                main_count++;
+            }
+            
+            // 2. Draw expansion moons if a planet is selected
+            if (expanded_planet_idx != -1) {
+                float arrow_x = icon_start_x + (expanded_planet_idx == 0 ? 0 : (expanded_planet_idx < 4 ? expanded_planet_idx : expanded_planet_idx - 1)) * icon_spacing;
+                renderer->drawText(arrow_x, bar_y - 0.07f, "[v MOONS v]", 0.007f, 0.4f, 1.0f, 0.6f, 1.0f, true, Renderer::CENTER);
+                
+                float moon_bar_y = bar_y - 0.15f;
+                float moon_bar_h = 0.10f;
+                renderer->addRect(0, moon_bar_y, 2.0f, moon_bar_h, 0.04f, 0.04f, 0.06f, 0.85f);
+                
+                int moon_count = 0;
+                for (int i = 0; i < (int)SOLAR_SYSTEM.size(); i++) {
+                    if (SOLAR_SYSTEM[i].parent_index == expanded_planet_idx) {
+                        float mix = icon_start_x + moon_count * icon_spacing;
+                        float mr = 0.03f;
+                        bool hover_moon = (hmouse_x >= mix - mr && hmouse_x <= mix + mr && hmouse_y >= moon_bar_y - mr && hmouse_y <= moon_bar_y + mr);
+                        
+                        if (hover_moon && hlmb && !hlmb_prev) {
+                            selected_body_idx = i;
+                        }
+                        
+                        renderer->drawPlanetIcon(mix, moon_bar_y, mr, SOLAR_SYSTEM[i], (float)glfwGetTime());
+                        if (hover_moon || selected_body_idx == i)
+                             renderer->addCircleOutline(mix, moon_bar_y, mr * 1.1f, 0.002f, 0.4f, 1.0f, 0.6f, 1.0f);
+                        
+                        renderer->drawText(mix, moon_bar_y - mr - 0.012f, SOLAR_SYSTEM[i].name.c_str(), 0.007f, 0.8f, 1.0f, 0.8f, 1.0f, true, Renderer::CENTER);
+                        moon_count++;
+                    }
+                }
+            }
+        }
+
+        // --- Detailed Info Panel (Top Left) ---
+        if (selected_body_idx != -1 && selected_body_idx < (int)SOLAR_SYSTEM.size()) {
+            const CelestialBody& b = SOLAR_SYSTEM[selected_body_idx];
+            float panel_w = 0.35f;
+            float panel_h = 0.45f;
+            float panel_x = -1.0f + panel_w/2.0f + 0.02f;
+            float panel_y = 0.92f - (show_galaxy_info ? 0.12f : 0) - (expanded_planet_idx != -1 ? 0.10f : 0) - panel_h/2.0f - 0.02f;
+            
+            renderer->addRect(panel_x, panel_y, panel_w, panel_h, 0.03f, 0.03f, 0.05f, 0.85f);
+            renderer->addRectOutline(panel_x, panel_y, panel_w, panel_h, 0.4f, 0.8f, 1.0f, 0.7f);
+            
+            float tx = panel_x - panel_w/2.0f + 0.02f;
+            float ty = panel_y + panel_h/2.0f - 0.04f;
+            float line_h = 0.025f;
+            char buf[128];
+            
+            renderer->drawText(tx, ty, b.name.c_str(), 0.018f, b.r, b.g, b.b, 1.0f);
+            ty -= line_h * 1.5f;
+            
+            const char* types[] = {"STAR", "TERRESTRIAL", "GAS GIANT", "MOON", "RINGED GIANT"};
+            snprintf(buf, sizeof(buf), "TYPE: %s", types[b.type]);
+            renderer->drawText(tx, ty, buf, 0.010f, 0.7f, 0.7f, 0.7f); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "RADIUS: %.1f km", b.radius / 1000.0);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "MASS: %.3e kg", b.mass);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            double g_surf = (6.674e-11 * b.mass) / (b.radius * b.radius);
+            snprintf(buf, sizeof(buf), "SURFACE G: %.3f m/s2", g_surf);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            double volume = (4.0/3.0) * 3.14159 * pow(b.radius, 3);
+            double density = b.mass / volume;
+            snprintf(buf, sizeof(buf), "DENSITY: %.1f kg/m3", density);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "ORBIT PERIOD: %.2f days", b.orbital_period / 86400.0);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "ECCENTRICITY: %.4f", b.eccentricity);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "INCLINATION: %.2f deg", b.inclination * 180.0 / 3.14159);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "SEMI-MAJOR AXIS: %.2f AU", b.sma_base / 1.496e11);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "ATMOSPHERE: %.2f hPa", b.surface_pressure);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "TEMPERATURE: %.1f K", b.average_temp);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "AXIAL TILT: %.2f deg", b.axial_tilt * 180.0 / 3.14159);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            int moon_count = 0;
+            for(int m=0; m<(int)SOLAR_SYSTEM.size(); m++) if(SOLAR_SYSTEM[m].parent_index == selected_body_idx) moon_count++;
+            snprintf(buf, sizeof(buf), "MOONS: %d", moon_count);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+            
+            snprintf(buf, sizeof(buf), "ALBEDO (SCAT): %.3f", b.scattering_coef);
+            renderer->drawText(tx, ty, buf, 0.009f, 1, 1, 1); ty -= line_h;
+        }
 
         if (flight_assist_menu) {
             float menu_w = 0.25f;
@@ -4149,7 +4285,7 @@ int main() {
   rocketBox.destroy();
   delete r3d;
   
-  // 游戏结束时保存最终状态
+  // Save final state on ending
   if (rocket_state.status == LANDED || rocket_state.status == CRASHED) {
     SaveSystem::SaveGame(assembly, rocket_state, control_input);
     cout << "\n>> GAME SAVED." << endl;
@@ -4161,4 +4297,4 @@ int main() {
     cin.get();
   }
   return 0;
-}
+}}

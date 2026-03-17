@@ -283,13 +283,10 @@ GIT_EXECUTABLE:FILEPATH=C:/Program Files/Git/cmd/git.exe
 //Value Computed by CMake
 GLFW_BINARY_DIR:STATIC=C:/antigravity_code/RocketSim3D/build/_deps/glfw-build
 
-//Build the GLFW documentation
 GLFW_BUILD_DOCS:BOOL=OFF
 
-//Build the GLFW example programs
 GLFW_BUILD_EXAMPLES:BOOL=OFF
 
-//Build the GLFW test programs
 GLFW_BUILD_TESTS:BOOL=OFF
 
 //Generate installation target
@@ -450,7 +447,7 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_MT
 CMAKE_MT-ADVANCED:INTERNAL=1
 //number of local generators
-CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=3
+CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=1
 //Platform information initialized
 CMAKE_PLATFORM_INFO_INITIALIZED:INTERNAL=1
 //noop for ranlib

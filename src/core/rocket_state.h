@@ -63,6 +63,15 @@ struct CelestialBody {
     
     // Pre-calculated SOI
     double soi_radius;        // Sphere of Influence radius (meters)
+
+    // Galaxy Info Fields
+    int parent_index = -1;             // Index of parent body (for moons)
+    double surface_pressure = 0.0;     // (hPa)
+    double average_temp = 0.0;         // (K)
+    double scattering_coef = 0.1;      // (Albedo approximation)
+    double eccentricity = 0.0;         // Current calculated eccentricity
+    double inclination = 0.0;          // Current calculated inclination (rad)
+    double orbital_period = 0.0;       // (seconds)
 };
 
 extern std::vector<CelestialBody> SOLAR_SYSTEM;
@@ -220,6 +229,10 @@ struct RocketState {
     
     // Body-fixed surface coordinates (relative to planet center, rotated frame)
     double surf_px = 0.0, surf_py = EARTH_RADIUS, surf_pz = 0.0;
+    
+    // Launch site coordinates (degrees)
+    double launch_latitude = 28.5;  // Default: Cape Canaveral
+    double launch_longitude = -80.6;
     
     // Attitude
     Quat attitude;           // True 3D attitude
