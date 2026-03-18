@@ -8,6 +8,10 @@ project(RocketSim3D VERSION 1.0)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # 4. 查找系统中的依赖库 (OpenGL 和 GLFW)
 # 注意：你需要确保你的电脑上已经安装了 GLFW 的开发包
 find_package(OpenGL REQUIRED)

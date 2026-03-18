@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string>
 #include <iostream>
+#include <map>
+#include <algorithm>
 #include "core/rocket_state.h"
 
 #ifndef PI
@@ -44,10 +46,13 @@ static const char *vertexShaderSource2D = R"(
     #version 330 core
     layout (location = 0) in vec2 aPos;
     layout (location = 1) in vec4 aColor;
+    layout (location = 2) in vec2 aTexCoord;
     out vec4 ourColor;
+    out vec2 TexCoord;
     void main() {
         gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);
         ourColor = aColor;
+        TexCoord = aTexCoord;
     }
 )";
 
@@ -55,15 +60,25 @@ static const char *fragmentShaderSource2D = R"(
     #version 330 core
     out vec4 FragColor;
     in vec4 ourColor;
+    in vec2 TexCoord;
+    uniform sampler2D ourTexture;
     void main() {
-        FragColor = ourColor;
+        float alpha = texture(ourTexture, TexCoord).r;
+        FragColor = vec4(ourColor.rgb, ourColor.a * alpha);
     }
 )";
 
 class Renderer {
 private:
-  unsigned int shaderProgram, VBO, VAO;
+  unsigned int shaderProgram, VBO, VAO, fontTexture;
   std::vector<float> vertices;
+  
+  struct GlyphInfo {
+      float u1, v1, u2, v2;
+      int w, h;
+  };
+  std::map<unsigned int, GlyphInfo> glyphCache;
+
   unsigned int compileShader(unsigned int type, const char *source) {
     unsigned int id = glCreateShader(type);
     glShaderSource(id, 1, &source, NULL);
@@ -72,6 +87,7 @@ private:
   }
 
 public:
+  void beginFrame() { vertices.clear(); }
   Renderer() {
     unsigned int v = compileShader(GL_VERTEX_SHADER, vertexShaderSource2D);
     unsigned int f = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource2D);
@@ -87,35 +103,42 @@ public:
     glGenBuffers(1, &VBO);
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    // 预分配显存
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 5000000, NULL,
-                 GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 5000000, NULL, GL_DYNAMIC_DRAW);
 
-    // 位置属性 (location=0)
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                          (void *)0);
+    // X, Y (0)
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)0);
     glEnableVertexAttribArray(0);
-    // 颜色属性 (location=1)
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
-                          (void *)(2 * sizeof(float)));
+    // R, G, B, A (1)
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(2 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    // U, V (2)
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void *)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    
+    buildFontAtlas();
   }
 
-  void beginFrame() { vertices.clear(); }
+  // Unified Atlas build logic
+  // Moved into buildFontAtlas above
 
-  void addVertex(float x, float y, float r, float g, float b, float a) {
-    vertices.insert(vertices.end(), {x, y, r, g, b, a});
+  void addVertex(float x, float y, float r, float g, float b, float a, float u = 0, float v = 0) {
+    vertices.push_back(x); vertices.push_back(y);
+    vertices.push_back(r); vertices.push_back(g); vertices.push_back(b); vertices.push_back(a);
+    vertices.push_back(u); vertices.push_back(v);
+  }
+  
+  void addVertexWhite(float x, float y, float r, float g, float b, float a) {
+      addVertex(x, y, r, g, b, a, 1.0f/512.0f, 1.0f/512.0f);
   }
 
   // 普通矩形
-  void addRect(float x, float y, float w, float h, float r, float g, float b,
-               float a = 1.0f) {
-    addVertex(x - w / 2, y - h / 2, r, g, b, a);
-    addVertex(x + w / 2, y - h / 2, r, g, b, a);
-    addVertex(x + w / 2, y + h / 2, r, g, b, a);
-    addVertex(x + w / 2, y + h / 2, r, g, b, a);
-    addVertex(x - w / 2, y + h / 2, r, g, b, a);
-    addVertex(x - w / 2, y - h / 2, r, g, b, a);
+  void addRect(float x, float y, float w, float h, float r, float g, float b, float a = 1.0f) {
+    addVertexWhite(x - w / 2, y - h / 2, r, g, b, a);
+    addVertexWhite(x + w / 2, y - h / 2, r, g, b, a);
+    addVertexWhite(x + w / 2, y + h / 2, r, g, b, a);
+    addVertexWhite(x + w / 2, y + h / 2, r, g, b, a);
+    addVertexWhite(x - w / 2, y + h / 2, r, g, b, a);
+    addVertexWhite(x - w / 2, y - h / 2, r, g, b, a);
   }
 
   // 矩形边框
@@ -234,9 +257,9 @@ public:
           r = 0.15f + lush; g = 0.4f + lush + lat * 0.1f; b = 0.12f + lush * 0.5f;
         }
       }
-      addVertex(cx, cy, r, g, b, 1.0f);
-      addVertex(cx + radius * std::cos(theta1), cy + radius * std::sin(theta1), r, g, b, 1.0f);
-      addVertex(cx + radius * std::cos(theta2), cy + radius * std::sin(theta2), r, g, b, 1.0f);
+      addVertexWhite(cx, cy, r, g, b, 1.0f);
+      addVertexWhite(cx + radius * std::cos(theta1), cy + radius * std::sin(theta1), r, g, b, 1.0f);
+      addVertexWhite(cx + radius * std::cos(theta2), cy + radius * std::sin(theta2), r, g, b, 1.0f);
     }
   }
 
@@ -248,12 +271,12 @@ public:
       float t1 = 2.0f * PI * float(i) / float(segments) + cam_angle;
       float t2 = 2.0f * PI * float(i + 1) / float(segments) + cam_angle;
       float ir = radius, or_ = radius + atmo_t;
-      addVertex(cx + ir * std::cos(t1), cy + ir * std::sin(t1), 0.4f, 0.6f, 1.0f, 0.4f);
-      addVertex(cx + ir * std::cos(t2), cy + ir * std::sin(t2), 0.4f, 0.6f, 1.0f, 0.4f);
-      addVertex(cx + or_ * std::cos(t1), cy + or_ * std::sin(t1), 0.3f, 0.5f, 0.9f, 0.0f);
-      addVertex(cx + or_ * std::cos(t1), cy + or_ * std::sin(t1), 0.3f, 0.5f, 0.9f, 0.0f);
-      addVertex(cx + ir * std::cos(t2), cy + ir * std::sin(t2), 0.4f, 0.6f, 1.0f, 0.4f);
-      addVertex(cx + or_ * std::cos(t2), cy + or_ * std::sin(t2), 0.3f, 0.5f, 0.9f, 0.0f);
+      addVertexWhite(cx + ir * std::cos(t1), cy + ir * std::sin(t1), 0.4f, 0.6f, 1.0f, 0.4f);
+      addVertexWhite(cx + ir * std::cos(t2), cy + ir * std::sin(t2), 0.4f, 0.6f, 1.0f, 0.4f);
+      addVertexWhite(cx + or_ * std::cos(t1), cy + or_ * std::sin(t1), 0.3f, 0.5f, 0.9f, 0.0f);
+      addVertexWhite(cx + or_ * std::cos(t1), cy + or_ * std::sin(t1), 0.3f, 0.5f, 0.9f, 0.0f);
+      addVertexWhite(cx + ir * std::cos(t2), cy + ir * std::sin(t2), 0.4f, 0.6f, 1.0f, 0.4f);
+      addVertexWhite(cx + or_ * std::cos(t2), cy + or_ * std::sin(t2), 0.3f, 0.5f, 0.9f, 0.0f);
     }
   }
 
@@ -324,9 +347,9 @@ public:
                 Vec3 col = (lat1 + lat2 > 0) ? Vec3(0.08f, 0.45f, 0.88f) : Vec3(0.58f, 0.32f, 0.15f);
                 auto safeAddTri = [&](Vec2 a, Vec2 b, Vec2 c) {
                     if (a.x > 900 || b.x > 900 || c.x > 900) return;
-                    addVertex(a.x, a.y, col.x, col.y, col.z, 1.0f);
-                    addVertex(b.x, b.y, col.x, col.y, col.z, 1.0f);
-                    addVertex(c.x, c.y, col.x, col.y, col.z, 1.0f);
+                    addVertexWhite(a.x, a.y, col.x, col.y, col.z, 1.0f);
+                    addVertexWhite(b.x, b.y, col.x, col.y, col.z, 1.0f);
+                    addVertexWhite(c.x, c.y, col.x, col.y, col.z, 1.0f);
                 };
                 safeAddTri(p1, p2, p3); safeAddTri(p1, p3, p4);
             }
@@ -577,11 +600,6 @@ private:
       static const uint16_t g_u5355[] = {0x0100,0x0100,0x7FFE,0x0000,0x3FC0,0x0000,0x3FC0,0x0000,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
       static const uint16_t g_u822A[] = {0x0800,0x0800,0x7F00,0x0820,0x0820,0x0BF8,0x1A28,0x2A28,0x4BF8,0x0A28,0x0A28,0x0BF8,0x0A28,0x0A28,0x0A28,0x0000};
       static const uint16_t g_u5C40[] = {0x7FFE,0x4002,0x4002,0x47F2,0x4412,0x4412,0x4412,0x4412,0x4412,0x47F2,0x4002,0x4002,0x7FFE,0x0000,0x0000,0x0000};
-      static const uint16_t g_u77FF_2[] = {0x0080,0x1080,0x1080,0x1FFC,0x1080,0x1090,0x10A0,0x10C0,0x1180,0x1100,0x1200,0x1400,0x1000,0x1000,0x0000,0x0000};
-      static const uint16_t g_u7194_3[] = {0x2008,0x27FC,0x2008,0x2008,0x23F8,0xAB08,0x6330,0x2320,0x2210,0xA338,0x6308,0x23F8,0x2208,0x2208,0x23F8,0x0000};
-      static const uint16_t g_u7089_2[] = {0x2000,0x23F8,0x2210,0x2210,0x23F8,0xA310,0x67F0,0x2110,0x2110,0xA110,0x6110,0x2110,0x2110,0x21F0,0x2000,0x0000};
-      static const uint16_t g_u88C5_3[] = {0x0100,0x1108,0x1104,0x1102,0x7FF1,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u77FF_3[] = {0x0080,0x1080,0x1080,0x1FFC,0x1080,0x1090,0x10A0,0x10C0,0x1180,0x1100,0x1200,0x1400,0x1000,0x1000,0x0000,0x0000};
 
       switch(unicode) {
         case 0x8BBE: return g_u8BBE; case 0x7F6E: return g_u7F6E; case 0x8BED: return g_u8BED; case 0x8A00: return g_u8A00;
@@ -604,91 +622,126 @@ private:
       }
   }
 
+  void buildFontAtlas() {
+      const int ATLAS_SIZE = 512;
+      std::vector<unsigned char> atlasData(ATLAS_SIZE * ATLAS_SIZE, 0);
+      
+      // Reserved white pixel at 0,0 for solid primitives (pixel-perfect)
+      for(int y=0; y<4; y++) for(int x=0; x<4; x++) atlasData[y*ATLAS_SIZE + x] = 255;
+      glyphCache[0] = {0.5f/ATLAS_SIZE, 0.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 4, 4};
+
+      int curX = 8, curY = 0, maxHeight = 0;
+
+      auto packBitmap = [&](unsigned int unicode, const uint16_t* bitmap, int w, int h) {
+          if (curX + w + 2 >= ATLAS_SIZE) { curX = 0; curY += maxHeight + 2; maxHeight = 0; }
+          if (curY + h + 2 >= ATLAS_SIZE) return;
+
+          for (int r = 0; r < h; r++) {
+              uint16_t rowData = bitmap[r];
+              for (int c = 0; c < w; c++) {
+                  if (rowData & (1 << (w - 1 - c))) {
+                      // Flip Y for standard OpenGL orientation if needed, but we flip UVs in drawText
+                      atlasData[(curY + r) * ATLAS_SIZE + (curX + c)] = 255;
+                  }
+              }
+          }
+          // Half-texel offset for pixel-perfect sampling (Industrial practice)
+          float uv_off = 0.1f; 
+          glyphCache[unicode] = { (float)(curX + uv_off) / ATLAS_SIZE, (float)(curY + uv_off) / ATLAS_SIZE, 
+                                  (float)(curX + w - uv_off) / ATLAS_SIZE, (float)(curY + h - uv_off) / ATLAS_SIZE, w, h };
+          curX += w + 2;
+          if (h > maxHeight) maxHeight = h;
+      };
+
+      // Pack ASCII properly
+      for (int i = 32; i < 127; i++) {
+          uint64_t g = getGlyph5x7((char)i);
+          uint16_t rowData[7];
+          // Bits 5..1 represent the 5 pixels. Shift right by 1 to align with 4..0.
+          for(int r=0; r<7; r++) rowData[r] = (uint16_t)((g >> ((6-r)*8)) & 0xFF) >> 1;
+          packBitmap(i, rowData, 5, 7);
+      }
+
+      // Pack Chinese (Scan all hardcoded glyphs for industrial robustness)
+      for (int i = 128; i < 0xFFFF; i++) {
+          const uint16_t* b = getGlyph16x16((unsigned int)i);
+          if (b) packBitmap(i, b, 16, 16);
+      }
+
+      glGenTextures(1, &fontTexture);
+      glBindTexture(GL_TEXTURE_2D, fontTexture);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_SIZE, ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, atlasData.data());
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  }
+
 public:
   enum Align { LEFT, CENTER, RIGHT };
   void drawText(float x, float y, const char* text, float size, float r, float g, float b, float a = 1.0f, bool shadow = true, Align align = LEFT) {
     if (!text || !text[0]) return;
     
+    // Scale parameters
     float px = size * 0.15f;
-    float cw = px * 6.0f; // ASCII char width
+    float cw = px * 6.0f; // Advanced step
     
-    // Width calculation (UTF-8 aware)
+    struct CachedChar { unsigned int unicode; float w_step; };
+    std::vector<CachedChar> cached;
     float total_w = 0;
-    {
-        int i = 0;
-        while (text[i]) {
-            unsigned char c = (unsigned char)text[i];
-            if (c < 128) {
-                total_w += cw;
-                i++;
-            } else if ((c & 0xE0) == 0xE0) { // 3-byte UTF-8
-                total_w += cw * 2.0f; // Chinese chars are double width
-                i += 3;
-            } else {
-                i++; // Fallback
-            }
-        }
-        if (total_w > 0) total_w -= px; // Remove last trailing space
-    }
-
-    float ox_start = x;
-    if (align == CENTER) ox_start -= total_w * 0.5f;
-    else if (align == RIGHT) ox_start -= total_w;
-
-    auto renderChar = [&](const char* charPtr, float ox, float oy, float cr, float cg, float cb, float ca, int& step) -> float {
-        unsigned char c = (unsigned char)charPtr[0];
-        step = 1;
-        if (c < 128) {
-            uint64_t gl = getGlyph5x7(c);
-            if (gl != 0 || c == ' ') {
-                for (int row = 0; row < 7; row++) {
-                    int row_data = (int)((gl >> ((6 - row) * 8)) & 0xFF);
-                    for (int col = 0; col < 5; col++) {
-                        if (row_data & (1 << (5 - col))) addRect(ox + col * px, oy + (3 - row) * px, px * 1.35f, px * 1.35f, cr, cg, cb, ca);
-                    }
-                }
-            }
-            return cw;
-        } else if ((c & 0xE0) == 0xE0) {
+    
+    const unsigned char* p = (const unsigned char*)text;
+    while (*p) {
+        unsigned int u = 0;
+        int step = 0;
+        if (*p < 0x80) { u = *p; step = 1; }
+        else if ((*p & 0xE0) == 0xE0 && *(p+1) && *(p+2)) {
+            u = ((*p & 0x0F) << 12) | ((*(p+1) & 0x3F) << 6) | (*(p+2) & 0x3F);
             step = 3;
-            unsigned int unicode = (unsigned int)(((charPtr[0] & 0x0F) << 12) | ((charPtr[1] & 0x3F) << 6) | (charPtr[2] & 0x3F));
-            const uint16_t* gl16 = getGlyph16x16(unicode);
-            float cpx = px * 0.75f;
-            if (gl16) {
-                for (int row = 0; row < 16; row++) {
-                    uint16_t rd = gl16[row];
-                    for (int col = 0; col < 16; col++) {
-                        if (rd & (1 << (15 - col))) addRect(ox + col * cpx, oy + (8 - row) * cpx, cpx * 1.1f, cpx * 1.1f, cr, cg, cb, ca);
-                    }
-                }
-            } else {
-                // Placeholder box for missing glyph
-                addRectOutline(ox + 8 * cpx, oy, 16 * cpx, 16 * cpx, cr, cg, cb, ca * 0.5f, 0.001f);
+        } else { step = 1; u = *p; } // Fallback
+        
+        float w_step = (u > 128) ? cw * 2.0f : cw;
+        cached.push_back({u, w_step});
+        total_w += w_step;
+        p += step;
+    }
+    if (total_w > 0) total_w -= px;
+
+    float ox = x;
+    if (align == CENTER) ox -= total_w * 0.5f;
+    else if (align == RIGHT) ox -= total_w;
+
+    auto renderString = [&](float startX, float startY, float cr, float cg, float cb, float ca) {
+        float curX = startX;
+        for (const auto& cc : cached) {
+            auto it = glyphCache.find(cc.unicode);
+            if (it != glyphCache.end()) {
+                const GlyphInfo& g = it->second;
+                // Scale quad to match visual density (Industrial font scaling)
+                float quad_scale = (cc.unicode > 128) ? 0.75f : 1.0f;
+                float w = (float)g.w * px * quad_scale;
+                float h = (float)g.h * px * quad_scale;
+                float x1 = curX, x2 = curX + w, y1 = startY - h/2.0f, y2 = startY + h/2.0f;
+                
+                // standard GL texture coords (V increases bottom to top)
+                // v1 is Top in atlas (large V), v2 is Bottom (small V)?
+                // Actually my packBitmap puts row 0 at curY.
+                addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
+                addVertex(x2, y1, cr, cg, cb, ca, g.u2, g.v2);
+                addVertex(x2, y2, cr, cg, cb, ca, g.u2, g.v1);
+                addVertex(x2, y2, cr, cg, cb, ca, g.u2, g.v1);
+                addVertex(x1, y2, cr, cg, cb, ca, g.u1, g.v1);
+                addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
+            } else if (cc.unicode > 32) {
+                // Unknown glyph
+                addRectOutline(curX + cw/2.0f, startY, cw, cw, cr, cg, cb, ca * 0.5f, 0.001f);
             }
-            return cw * 2.0f;
+            curX += cc.w_step;
         }
-        return cw;
     };
 
-    if (shadow) {
-        float sx_off = size * 0.08f;
-        float sy_off = -size * 0.08f;
-        int idx = 0;
-        float cx = ox_start + sx_off;
-        while (text[idx]) {
-            int step = 1;
-            cx += renderChar(text + idx, cx, y + sy_off, 0, 0, 0, a * 0.8f, step);
-            idx += step;
-        }
-    }
-
-    int idx = 0;
-    float cx = ox_start;
-    while (text[idx]) {
-        int step = 1;
-        cx += renderChar(text + idx, cx, y, r, g, b, a, step);
-        idx += step;
-    }
+    if (shadow) renderString(ox + size * 0.08f, y - size * 0.08f, 0, 0, 0, a * 0.8f);
+    renderString(ox, y, r, g, b, a);
   }
 
   void drawInt(float x, float y, int val, float size, float r, float g, float b, float a = 1.0f, Align align = LEFT) {
@@ -702,7 +755,8 @@ public:
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(float), vertices.data());
-    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(vertices.size() / 6));
+    glBindTexture(GL_TEXTURE_2D, fontTexture);
+    glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(vertices.size() / 8));
   }
 
   // 绘制星球图标 (Procedural 2.5D Thumbnail)
@@ -763,9 +817,9 @@ public:
                 
                 auto safeAdd = [&](Vec2 va, Vec2 vb, Vec2 vc) {
                     if (va.x > 900 || vb.x > 900 || vc.x > 900) return;
-                    addVertex(va.x, va.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
-                    addVertex(vb.x, vb.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
-                    addVertex(vc.x, vc.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
+                    addVertexWhite(va.x, va.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
+                    addVertexWhite(vb.x, vb.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
+                    addVertexWhite(vc.x, vc.y, cr * dark * light, cg * dark * light, cb * dark * light, 1.0f);
                 };
                 safeAdd(p1, p2, p3); safeAdd(p1, p3, p4);
             }
@@ -785,7 +839,6 @@ public:
     glDeleteVertexArrays(1, &VAO);
     glDeleteBuffers(1, &VBO);
     glDeleteProgram(shaderProgram);
+    glDeleteTextures(1, &fontTexture);
   }
-
-private:
 };
