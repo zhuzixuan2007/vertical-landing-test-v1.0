@@ -13,6 +13,7 @@ struct Plate {
     Vec3 eulerPole; // Axis of rotation
     float omega;    // Rotation speed
     float baseElev; // Continental (0.55) or Oceanic (0.1)
+    float sizeWeight; // NEW: Controls area influence
 };
 
 class TectonicSimulator {
@@ -30,17 +31,29 @@ public:
 
     void initializePlates(int count) {
         plates.clear();
-        std::mt19937 gen(42);
+        std::mt19937 gen(1337);
         std::uniform_real_distribution<float> dist(0, 1);
-        for (int i = 0; i < count; i++) {
+        
+        // Increase seed count to 32 for more variety
+        for (int i = 0; i < 32; i++) {
             float theta = dist(gen) * 2.0f * 3.14159f;
             float phi = acosf(dist(gen) * 2.0f - 1.0f);
             Vec3 p(cosf(theta) * sinf(phi), cosf(phi), sinf(theta) * sinf(phi));
+            
             Vec3 axis(dist(gen) * 2 - 1, dist(gen) * 2 - 1, dist(gen) * 2 - 1);
-            float omega = (dist(gen) * 0.1f + 0.05f);
-            // Increase ocean probability to 65% for more water coverage
+            float omega = (dist(gen) * 0.12f + 0.04f);
             float elev = (dist(gen) < 0.65f) ? 0.05f : 0.55f;
-            plates.push_back({p, axis.normalized(), omega, elev});
+            
+            // Random size weight (0.7 to 2.2) to create big and small plates
+            float sWeight = 0.7f + powf(dist(gen), 2.0f) * 1.5f; 
+            
+            // Plate Fusion: 20% chance to share motion with previous plate
+            if (i > 0 && dist(gen) < 0.2f) {
+                axis = plates.back().eulerPole;
+                omega = plates.back().omega;
+            }
+
+            plates.push_back({p, axis.normalized(), omega, elev, sWeight});
         }
     }
 
@@ -52,6 +65,11 @@ public:
         float phi = (float)y / (height - 1) * 3.14159f;
         float theta = (float)x / (width - 1) * 2.0f * 3.14159f;
         return Vec3(cosf(theta) * sinf(phi), cosf(phi), sinf(theta) * sinf(phi));
+    }
+
+    float smoothstep(float edge0, float edge1, float x) {
+        float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
     }
 
     void lloydRelaxation(int iterations) {
@@ -77,7 +95,6 @@ public:
                 if (counts[i] > 0) plates[i].pos = (centroids[i] * (1.0f / counts[i])).normalized();
             }
         }
-        // Increase random jitter to 0.15 to further break hexagonal symmetry
         std::mt19937 gen(12345);
         std::uniform_real_distribution<float> dist(-0.15f, 0.15f);
         for (auto& p : plates) p.pos = (p.pos + Vec3(dist(gen), dist(gen), dist(gen))).normalized();
@@ -87,18 +104,25 @@ public:
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 Vec3 p = getSphericalPos(x, y);
-                // Reduce warping strength to 0.1 as requested
-                float wx = (simpleNoise(p*4.0f) - 0.5f) * 0.10f;
-                float wy = (simpleNoise(p*4.0f + Vec3(1,2,3)) - 0.5f) * 0.10f;
-                float wz = (simpleNoise(p*4.0f + Vec3(4,5,6)) - 0.5f) * 0.10f;
-                Vec3 warpedP = (p + Vec3(wx, wy, wz)).normalized();
-                int bestIdx = 0;
-                float minD = 1e10f;
+                int idx1 = -1, idx2 = -1;
+                float d1 = 1e10f, d2 = 1e10f;
+
                 for (int i = 0; i < (int)plates.size(); i++) {
-                    float d = (warpedP - plates[i].pos).lengthSq();
-                    if (d < minD) { minD = d; bestIdx = i; }
+                    // WEIGHTED DISTANCE logic: d = (dist + noise) / sizeWeight
+                    float noiseDist = (simpleNoise(p*8.0f) - 0.5f) * 0.12f; 
+                    float d = ((p - plates[i].pos).length() + noiseDist) / plates[i].sizeWeight;
+                    
+                    if (d < d1) { d2 = d1; idx2 = idx1; d1 = d; idx1 = i; }
+                    else if (d < d2) { d2 = d; idx2 = i; }
                 }
-                gridPlate[y * width + x] = bestIdx;
+
+                // Continuous Interpolation
+                float blend = 1.0f - smoothstep(0.0f, 0.20f, d2 - d1);
+                float h1 = plates[idx1].baseElev;
+                float h2 = (idx2 != -1) ? plates[idx2].baseElev : h1;
+                
+                gridPlate[y * width + x] = idx1; 
+                gridHeight[y * width + x] = h1 * (1.0f - blend * 0.5f) + h2 * (blend * 0.5f);
             }
         }
     }
@@ -118,15 +142,19 @@ public:
                     Vec3 v2 = plates[p2].eulerPole.cross(nPos) * plates[p2].omega;
                     Vec3 norm = (pPos - nPos).normalized();
                     float force = (v1 - v2).dot(norm);
-                    if (force < -0.01f) deltaHeight[idx] -= force * 2.0f * dt;
-                    else if (force > 0.01f) deltaHeight[idx] -= force * 0.5f * dt;
+                    if (force < -0.01f) {
+                        deltaHeight[idx] -= force * 2.5f * dt;
+                        // Flexure
+                        int flexIdx = y * width + (x - 2 + width) % width;
+                        deltaHeight[flexIdx] += force * 0.4f * dt; 
+                    }
+                    else if (force > 0.01f) deltaHeight[idx] -= force * 0.6f * dt;
                 }
             }
         }
         for (int i = 0; i < width * height; i++) {
             gridHeight[i] += deltaHeight[i];
-            float target = plates[gridPlate[i]].baseElev;
-            gridHeight[i] = gridHeight[i] * (1.0f - 0.05f * dt) + target * (0.05f * dt);
+            gridHeight[i] = std::clamp(gridHeight[i], 0.02f, 0.95f);
         }
     }
 
@@ -162,15 +190,14 @@ public:
         initializePlates(24);
         lloydRelaxation(3);
         updatePlateMapWithWarping();
-        for (int i = 0; i < width * height; i++) gridHeight[i] = plates[gridPlate[i]].baseElev;
         float dt = 1.0f;
         for (int gen = 0; gen < generations; gen++) updateHeightFromForces(dt);
         for (int i = 0; i < width * height; i++) {
             Vec3 p = getSphericalPos(i % width, i / width);
-            float islands = (simpleNoise(p * 12.0f) - 0.5f) * 0.12f;
-            gridHeight[i] += islands;
+            float detail = (simpleNoise(p * 15.0f) - 0.5f) * 0.08f;
+            gridHeight[i] += detail;
         }
-        smoothHeight(1);
+        smoothHeight(2);
         bake();
     }
 };
