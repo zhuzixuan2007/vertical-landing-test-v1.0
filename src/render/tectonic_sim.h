@@ -38,7 +38,8 @@ public:
             Vec3 p(cosf(theta) * sinf(phi), cosf(phi), sinf(theta) * sinf(phi));
             Vec3 axis(dist(gen) * 2 - 1, dist(gen) * 2 - 1, dist(gen) * 2 - 1);
             float omega = (dist(gen) * 0.1f + 0.05f);
-            float elev = (dist(gen) < 0.4f) ? 0.05f : 0.55f;
+            // Increase ocean probability to 65% for more water coverage
+            float elev = (dist(gen) < 0.65f) ? 0.05f : 0.55f;
             plates.push_back({p, axis.normalized(), omega, elev});
         }
     }
@@ -76,8 +77,9 @@ public:
                 if (counts[i] > 0) plates[i].pos = (centroids[i] * (1.0f / counts[i])).normalized();
             }
         }
+        // Increase random jitter to 0.15 to further break hexagonal symmetry
         std::mt19937 gen(12345);
-        std::uniform_real_distribution<float> dist(-0.05f, 0.05f);
+        std::uniform_real_distribution<float> dist(-0.15f, 0.15f);
         for (auto& p : plates) p.pos = (p.pos + Vec3(dist(gen), dist(gen), dist(gen))).normalized();
     }
 
@@ -85,9 +87,10 @@ public:
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 Vec3 p = getSphericalPos(x, y);
-                float wx = (simpleNoise(p*4.0f) - 0.5f) * 0.15f;
-                float wy = (simpleNoise(p*4.0f + Vec3(1,2,3)) - 0.5f) * 0.15f;
-                float wz = (simpleNoise(p*4.0f + Vec3(4,5,6)) - 0.5f) * 0.15f;
+                // Reduce warping strength to 0.1 as requested
+                float wx = (simpleNoise(p*4.0f) - 0.5f) * 0.10f;
+                float wy = (simpleNoise(p*4.0f + Vec3(1,2,3)) - 0.5f) * 0.10f;
+                float wz = (simpleNoise(p*4.0f + Vec3(4,5,6)) - 0.5f) * 0.10f;
                 Vec3 warpedP = (p + Vec3(wx, wy, wz)).normalized();
                 int bestIdx = 0;
                 float minD = 1e10f;
