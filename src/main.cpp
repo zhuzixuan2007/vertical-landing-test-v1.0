@@ -1678,7 +1678,7 @@ int main() {
                   r3d->lightDir = Vec3((float)(light_dx/light_len), (float)(light_dy/light_len), (float)(light_dz/light_len));
               }
           }
-          r3d->drawPlanet(earthMesh, planetModel, b.type, b.r, b.g, b.b, 1.0f, (float)rocket_state.sim_time, (int)i);
+          r3d->drawPlanet(earthMesh, planetModel, b.type, b.r, b.g, b.b, 1.0f, r, (float)rocket_state.sim_time, (int)i);
           
           if ((b.type == TERRESTRIAL || b.type == GAS_GIANT) && i != 1 && i != 4) {
               // 修改前：float atmo_radius = r * 1.12f;

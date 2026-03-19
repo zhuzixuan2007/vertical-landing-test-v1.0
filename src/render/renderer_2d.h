@@ -601,6 +601,23 @@ private:
       static const uint16_t g_u822A[] = {0x0800,0x0800,0x7F00,0x0820,0x0820,0x0BF8,0x1A28,0x2A28,0x4BF8,0x0A28,0x0A28,0x0BF8,0x0A28,0x0A28,0x0A28,0x0000};
       static const uint16_t g_u5C40[] = {0x7FFE,0x4002,0x4002,0x47F2,0x4412,0x4412,0x4412,0x4412,0x4412,0x47F2,0x4002,0x4002,0x7FFE,0x0000,0x0000,0x0000};
 
+      static const uint16_t g_u5C06[] = {0x0110,0x2110,0x1110,0x11FC,0x1110,0x3910,0x5510,0x911C,0x1110,0x1110,0x11FE,0x1110,0x1110,0x1110,0x1110,0x0000};
+      static const uint16_t g_u5220[] = {0x0000,0x3FF0,0x2210,0x2210,0x2212,0x2212,0x2212,0x2212,0x2212,0x2212,0x2212,0x2210,0x2210,0x3FF0,0x0000,0x0000};
+      static const uint16_t g_u9664[] = {0x0280,0x2280,0x12FE,0x1280,0x1284,0xF282,0x02BC,0x4290,0x2290,0x13F0,0x2210,0x4210,0x0210,0x0210,0x0210,0x0000};
+      static const uint16_t g_u5B58[] = {0x0100,0x0100,0x7FFE,0x0100,0x0200,0x0400,0x0810,0x1FFC,0x0110,0x0110,0x0110,0x0110,0x0110,0x0110,0x0050,0x0020};
+      static const uint16_t g_u6863[] = {0x0810,0x0810,0x08FE,0x7E10,0x0810,0x0810,0x0BA0,0x1840,0x2820,0x4810,0x0E10,0x11FC,0x1004,0x1004,0x11FC,0x0004};
+      static const uint16_t g_u4F7F[] = {0x0880,0x1880,0x18FE,0x2880,0x4880,0x08F8,0x0904,0x0A02,0x0C02,0x0802,0x0BFE,0x0802,0x0802,0x0802,0x0802,0x0000};
+      static const uint16_t g_u7528[] = {0x0100,0x7FFE,0x4102,0x4102,0x7FFE,0x4102,0x4102,0x7FFE,0x4102,0x4102,0x4102,0x4102,0x4102,0x4102,0x4102,0x4002};
+      static const uint16_t g_u4E0A[] = {0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0104,0x0104,0x0104,0x7FFE,0x0000,0x0000,0x0000,0x0000,0x0000};
+      static const uint16_t g_u4E0B[] = {0x7FFE,0x0100,0x0100,0x0100,0x0100,0x0100,0x0120,0x0120,0x0110,0x0110,0x0108,0x0104,0x0102,0x0100,0x0100,0x0000};
+      static const uint16_t g_u952E[] = {0x0840,0x1840,0x0840,0x7EFE,0x1924,0x1144,0xF144,0x01FC,0x0140,0x0144,0x01FE,0x0140,0x0544,0x0928,0x1110,0x6100};
+      static const uint16_t g_u9009[] = {0x0100,0x0100,0x01FC,0x2100,0x1110,0x1110,0x1FFF,0x0110,0x0110,0x0110,0x4428,0x2424,0x1422,0x0BC2,0x00FE,0x0000};
+      static const uint16_t g_u62E9[] = {0x1080,0x10BE,0x25A2,0xE5A2,0x25BE,0x2120,0x2FFC,0x2120,0x2120,0x2FFC,0x2120,0x2120,0x2120,0x2120,0x2520,0x2220};
+      static const uint16_t g_u6309[] = {0x1040,0x1040,0x11FC,0xFD04,0x11FC,0x1104,0x2104,0x21FC,0x4104,0x1104,0x11F8,0x1100,0x1104,0x110A,0x11F1,0x0000};
+      static const uint16_t g_u5FC3[] = {0x0100,0x0100,0x0100,0x0100,0x0100,0x2120,0x4110,0x4110,0x4108,0x4107,0x3FF8,0x0100,0x0D00,0x1100,0x6100,0x0000};
+      static const uint16_t g_u706B[] = {0x0100,0x0100,0x0100,0x0100,0x1110,0x0920,0x0540,0x0540,0x0380,0x0540,0x0920,0x1110,0x2108,0x4104,0x8102,0x0000};
+      static const uint16_t g_u7BAD[] = {0x1554,0x5554,0x3FFF,0x1554,0x1010,0x1110,0x1510,0x1910,0x1010,0x11FC,0x1110,0x1110,0x1110,0x1110,0x1110,0x0000};
+
       switch(unicode) {
         case 0x8BBE: return g_u8BBE; case 0x7F6E: return g_u7F6E; case 0x8BED: return g_u8BED; case 0x8A00: return g_u8A00;
         case 0x7EE7: return g_u7EE7; case 0x7EED: return g_u7EED; case 0x65B0: return g_u65B0; case 0x6E38: return g_u6E38;
@@ -618,6 +635,10 @@ private:
         case 0x5C04: return g_u5C04; case 0x573A: return g_u573A; case 0x8FDB: return g_u8FDB; case 0x5165: return g_u5165;
         case 0x6A21: return g_u6A21; case 0x5F0F: return g_u5F0F; case 0x4E3B: return g_u4E3B; case 0x83DC: return g_u83DC;
         case 0x5355: return g_u5355; case 0x822A: return g_u822A; case 0x5C40: return g_u5C40;
+        case 0x5C06: return g_u5C06; case 0x5220: return g_u5220; case 0x9664: return g_u9664; case 0x5B58: return g_u5B58;
+        case 0x6863: return g_u6863; case 0x4F7F: return g_u4F7F; case 0x7528: return g_u7528; case 0x4E0A: return g_u4E0A;
+        case 0x4E0B: return g_u4E0B; case 0x952E: return g_u952E; case 0x9009: return g_u9009; case 0x62E9: return g_u62E9;
+        case 0x6309: return g_u6309; case 0x5FC3: return g_u5FC3; case 0x706B: return g_u706B; case 0x7BAD: return g_u7BAD;
         default: return nullptr;
       }
   }
@@ -694,11 +715,109 @@ public:
     while (*p) {
         unsigned int u = 0;
         int step = 0;
-        if (*p < 0x80) { u = *p; step = 1; }
+        if (*p < 0x80) { 
+            u = *p; step = 1; 
+        }
         else if ((*p & 0xE0) == 0xE0 && *(p+1) && *(p+2)) {
+            // Valid UTF-8 (3 bytes)
             u = ((*p & 0x0F) << 12) | ((*(p+1) & 0x3F) << 6) | (*(p+2) & 0x3F);
             step = 3;
-        } else { step = 1; u = *p; } // Fallback
+        } else if (*p >= 0x81 && *(p+1)) {
+            // GBK fallback (2 bytes). We map the specific bytes we observed in the 
+            // localization dictionary to their correct internal Unicode index for our font atlas.
+            unsigned char b1 = *p;
+            unsigned char b2 = *(p+1);
+            unsigned int gbk = (b1 << 8) | b2;
+            step = 2;
+            
+            // Map GBK hex codes back to our custom Unicode glyphs
+            // (These are the GB2312/GBK hex representations of the chars in our localization file)
+            switch(gbk) {
+                case 0xBCCC: u = 0x7EE7; break; // 继
+                case 0xD0F8: u = 0x7EED; break; // 续
+                case 0xD3CE: u = 0x6E38; break; // 游
+                case 0xCFB7: u = 0x620F; break; // 戏
+                case 0xD0C2: u = 0x65B0; break; // 新
+                case 0xC9E8: u = 0x8BBE; break; // 设
+                case 0xD6C3: u = 0x7F6E; break; // 置
+                case 0xCDCBC: u = 0x9000; break; // 退
+                case 0xB3F6: u = 0x51FA; break; // 出
+                case 0xBEAF: u = 0x8B66; break; // 警
+                case 0xB8E6: u = 0x544A; break; // 告
+                case 0xBDAB: u = 0x5C06; break; // 将
+                case 0xC9BE: u = 0x5220; break; // 删
+                case 0xB3FD: u = 0x9664; break; // 除
+                case 0xB4E6: u = 0x5B58; break; // 存
+                case 0xB5B5: u = 0x6863; break; // 档
+                case 0xCAB9: u = 0x4F7F; break; // 使
+                case 0xD3C3: u = 0x7528; break; // 用
+                case 0xC9CF: u = 0x4E0A; break; // 上
+                case 0xCFC2: u = 0x4E0B; break; // 下
+                case 0xBCFC: u = 0x952E; break; // 键
+                case 0xD1A1: u = 0x9009; break; // 选
+                case 0xD4F1: u = 0x62E9; break; // 择
+                case 0xB0B4: u = 0x6309; break; // 按
+                case 0xBBD8: u = 0x56DE; break; // 回
+                case 0xB3B5: u = 0x8F66; break; // 车
+                case 0xC8B7: u = 0x786E; break; // 确
+                case 0xC8CF: u = 0x8BA4; break; // 认
+                case 0xD3EF: u = 0x8BED; break; // 语
+                case 0xD1D4: u = 0x8A00; break; // 言
+                case 0xD3A2: u = 0x82F1; break; // 英
+                case 0xD6D0: u = 0x4E2D; break; // 中
+                case 0xCEC4: u = 0x6587; break; // 文
+                case 0xB7B5: u = 0x8FD4; break; // 返
+                case 0xD7CA: u = 0x8D44; break; // 资
+                case 0xBDF0: u = 0x91D1; break; // 金
+                case 0xCCEC: u = 0x5929; break; // 天
+                case 0xBCAB: u = 0x822A; break; // 航
+                case 0xBED6: u = 0x5C40; break; // 局
+                case 0xD0C4: u = 0x5FC3; break; // 心
+                case 0xB9A5: u = 0x5DE5; break; // 工
+                case 0xB3A7: u = 0x5382; break; // 厂
+                case 0xB8C5: u = 0x6982; break; // 概
+                case 0xC0C0: u = 0x89C2; break; // 览
+                case 0xD7B4: u = 0x72B6; break; // 状
+                case 0xCCA1: u = 0x6001; break; // 态
+                case 0xD4DA: u = 0x5728; break; // 在
+                case 0xCFDF: u = 0x7EBF; break; // 线
+                case 0xC0EB: u = 0x79BB; break; // 离
+                case 0xBFF3: u = 0x77FF; break; // 矿
+                case 0xBBFA: u = 0x673A; break; // 机
+                case 0xC8DB: u = 0x7194; break; // 熔
+                case 0xC2AF: u = 0x7089; break; // 炉
+                case 0xD7B0: u = 0x88C5; break; // 装
+                case 0xC5E4: u = 0x914D; break; // 配
+                case 0xB2D6: u = 0x4ED3; break; // 仓
+                case 0xBFE2: u = 0x5E93; break; // 库
+                case 0xD4B4: u = 0x6E90; break; // 源
+                case 0xBBE0: u = 0x706B; break; // 火
+                case 0xBCFD: u = 0x7BAD; break; // 箭
+                case 0xC1E3: u = 0x96F6; break; // 零
+                case 0xBCEE: u = 0x4EF6; break; // 件
+                case 0xC3BB: u = 0x6CA1; break; // 没
+                case 0xD3D0: u = 0x6709; break; // 有
+                case 0xCEEF: u = 0x7269; break; // 物
+                case 0xB2FA: u = 0x4EA7; break; // 产
+                case 0xD7E9: u = 0x7EC4; break; // 组
+                case 0xBCE4: u = 0x95F4; break; // 间
+                case 0xB7A2: u = 0x53D1; break; // 发
+                case 0xC9E4: u = 0x5C04; break; // 射
+                case 0xB3A1: u = 0x573A; break; // 场
+                case 0xBDF8: u = 0x8FDB; break; // 进
+                case 0xC8EB: u = 0x5165; break; // 入
+                case 0xC4A3: u = 0x6A21; break; // 模
+                case 0xCABD: u = 0x5F0F; break; // 式
+                case 0xD6F7: u = 0x4E3B; break; // 主
+                case 0xB2CB: u = 0x83DC; break; // 菜
+                case 0xB5A5: u = 0x5355; break; // 单
+                default: 
+                    u = gbk + 0x10000; // Offset Unknown GBK to keep it out of valid ranges but > 128
+                    break;
+            }
+        } else { 
+            step = 1; u = *p; 
+        } 
         
         float w_step = (u > 128) ? cw * 2.0f : cw;
         cached.push_back({u, w_step});
@@ -723,9 +842,6 @@ public:
                 float h = (float)g.h * px * quad_scale;
                 float x1 = curX, x2 = curX + w, y1 = startY - h/2.0f, y2 = startY + h/2.0f;
                 
-                // standard GL texture coords (V increases bottom to top)
-                // v1 is Top in atlas (large V), v2 is Bottom (small V)?
-                // Actually my packBitmap puts row 0 at curY.
                 addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
                 addVertex(x2, y1, cr, cg, cb, ca, g.u2, g.v2);
                 addVertex(x2, y2, cr, cg, cb, ca, g.u2, g.v1);
@@ -733,8 +849,17 @@ public:
                 addVertex(x1, y2, cr, cg, cb, ca, g.u1, g.v1);
                 addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
             } else if (cc.unicode > 32) {
-                // Unknown glyph
-                addRectOutline(curX + cw/2.0f, startY, cw, cw, cr, cg, cb, ca * 0.5f, 0.001f);
+                // Unknown glyph - use a hollow box and warn developer
+                static unsigned int last_missing = 0;
+                if (cc.unicode != last_missing) {
+                    if (cc.unicode >= 0x10000) {
+                        std::cout << "[Renderer2D] Unknown GBK Double-byte: 0x" << std::hex << (cc.unicode - 0x10000) << std::dec << std::endl;
+                    } else {
+                        std::cout << "[Renderer2D] Missing Glyph: 0x" << std::hex << cc.unicode << std::dec << " in text: " << text << std::endl;
+                    }
+                    last_missing = cc.unicode;
+                }
+                addRectOutline(curX + cc.w_step/2.0f, startY, cc.w_step * 0.8f, cc.w_step * 0.8f, cr, cg, cb, ca * 0.5f, 0.001f);
             }
             curX += cc.w_step;
         }

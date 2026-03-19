@@ -315,6 +315,39 @@ inline Mesh ring(int segs, float innerRadius, float outerRadius) {
   return m;
 }
 
+// 基础平面 Patch (用于地形, 范围 [-0.5, 0.5])
+inline Mesh patch(int units) {
+  std::vector<Vertex3D> verts;
+  std::vector<unsigned int> indices;
+  float step = 1.0f / (float)units;
+  for (int z = 0; z <= units; z++) {
+    for (int x = 0; x <= units; x++) {
+      Vertex3D v;
+      v.px = (float)x * step - 0.5f;
+      v.py = 0;
+      v.pz = (float)z * step - 0.5f;
+      v.nx = 0; v.ny = 1; v.nz = 0;
+      v.u = (float)x * step;
+      v.v = (float)z * step;
+      v.r = 1; v.g = 1; v.b = 1; v.a = 1;
+      verts.push_back(v);
+    }
+  }
+  for (int z = 0; z < units; z++) {
+    for (int x = 0; x < units; x++) {
+      int i0 = z * (units + 1) + x;
+      int i1 = i0 + 1;
+      int i2 = i0 + (units + 1);
+      int i3 = i2 + 1;
+      indices.push_back(i0); indices.push_back(i2); indices.push_back(i1);
+      indices.push_back(i1); indices.push_back(i2); indices.push_back(i3);
+    }
+  }
+  Mesh m;
+  m.upload(verts, indices);
+  return m;
+}
+
 } // namespace MeshGen
 
 // ==========================================================
@@ -385,7 +418,9 @@ public:
 
   // === Terrain & Vegetation ===
   GLuint terrainProg = 0;
-  GLint ut_mvp = -1, ut_model = -1, ut_lightDir = -1, ut_viewPos = -1, ut_time = -1;
+  GLint ut_mvp = -1, ut_model = -1, ut_camPos = -1, ut_lightDir = -1, ut_viewPos = -1, ut_time = -1;
+  GLint ut_nodePos = -1, ut_nodeSide = -1, ut_nodeUp = -1; // For patch warping
+  GLint ut_planetCenterRel = -1; // New: Planet center relative to camera
   GLuint vegProg = 0;
   GLint uv_vp = -1, uv_proj = -1, uv_lightDir = -1, uv_viewPos = -1, uv_time = -1;
   GLuint treeVAO = 0, treeVBO = 0, treeEBO = 0, treeInstanceVBO = 0;
@@ -410,6 +445,7 @@ public:
   Vec3 camPos;
   Vec3 lightDir;
 
+  Mesh sharedPatchMesh;
   Terrain::QuadtreeTerrain* terrain = nullptr;
   Vegetation::VegetationSystem* vegSystem = nullptr;
 
@@ -2871,12 +2907,18 @@ R"(
       
       uniform mat4 uMVP;
       uniform mat4 uModel;
-      uniform vec3 uPlanetCenter;
+      uniform vec3 uCamPos;
+      uniform vec3 uPlanetCenterRel; // Relative to uCamPos (Camera-Relative Rendering)
       uniform float uPlanetRadius;
       uniform float uMaxElevation;
       uniform float uTime;
 
-      out vec3 vWorldPos;
+      // Patch Warping Uniforms
+      uniform vec3 uNodePos;
+      uniform vec3 uNodeSide;
+      uniform vec3 uNodeUp;
+
+      out vec3 vRelViewPos; // Point position relative to camera
       out vec3 vNormal;
       out vec2 vUV;
       out vec3 vLocalPos;
@@ -2890,8 +2932,8 @@ R"(
       }
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
-        float n000 = hash(i); float n100 = hash(i + vec3(1,0,0));
+        f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+        float n000 = hash(i);    float n100 = hash(i + vec3(1,0,0));
         float n010 = hash(i + vec3(0,1,0)); float n110 = hash(i + vec3(1,1,0));
         float n001 = hash(i + vec3(0,0,1)); float n101 = hash(i + vec3(1,0,1));
         float n011 = hash(i + vec3(0,1,1)); float n111 = hash(i + vec3(1,1,1));
@@ -2902,45 +2944,61 @@ R"(
         float v = 0.0, amp = 0.5;
         for (int i = 0; i < oct; i++) {
           v += noise3d(p) * amp;
-          p = p * 2.07 + vec3(0.131, -0.217, 0.344);
-          amp *= 0.48;
+          p = p * 2.15 + vec3(0.131, -0.217, 0.344); // Increased lacunarity for more detail
+          amp *= 0.47;
         }
         return v;
       }
       float warpedFbm(vec3 p) {
         vec3 q = vec3(fbm(p, 4), fbm(p + vec3(5.2, 1.3, 2.8), 4), fbm(p + vec3(9.1, 4.7, 3.1), 4));
-        return fbm(p + q * 1.6, 8);
+        return fbm(p + q * 1.8, 10); // Increased detail and warping
       }
 
       void main() {
-        vec3 normPos = normalize(aPos);
-        float hStr = warpedFbm(normPos * 4.8); // Slightly higher frequency
+        // 1. Warping flat patch (-0.5 to 0.5) to unit cube face
+        vec3 cubePos = uNodePos + aPos.x * uNodeSide + aPos.z * uNodeUp;
+        vec3 normPos = normalize(cubePos);
+        
+        // 2. Sample procedural height (Kilometers)
+        float hStr = warpedFbm(normPos * 6.5); 
         float seaLevel = 0.44;
+        float landH = max(0.0, (hStr - seaLevel) / (1.0 - seaLevel));
+        float height = landH * uMaxElevation / uPlanetRadius;
         
-        // Displacement: Mountains go up, Oceans go down slightly
-        float h = (hStr - seaLevel);
-        float height = h * uMaxElevation / uPlanetRadius;
+        // --- KSC FLATTENING (Geometry Sync) ---
+        vec3 kscPos = vec3(0.145, -0.867, 0.477);
+        float kscDist = length(normPos - kscPos);
+        float kscMask = smoothstep(0.08, 0.02, kscDist); 
+        height = mix(height, 0.005 / uPlanetRadius, kscMask); 
         
-        vec3 displacedPos = normPos * (1.0 + max(-0.0005, height)); // Cap depth for visual stability
-        vElevation = hStr; // Pass raw noise for biome logic
-        vWorldPos = (uModel * vec4(displacedPos, 1.0)).xyz;
-        vNormal = mat3(uModel) * normPos; // Surface normal is planet-normal initially
+        // Prevent radical ocean displacement
+        if (hStr < seaLevel) height = -0.0005;
+        
+        // 3. Compute High-Precision Relative Position (Camera-Relative Rendering)
+        // Extract local rotation-scale and apply to compute position relative to planet center
+        mat3 localRotScale = mat3(uModel); 
+        vRelViewPos = uPlanetCenterRel + localRotScale * (normPos * (1.0 + height));
+        
+        vElevation = hStr; 
+        vNormal = localRotScale * normPos; 
         vUV = aUV;
-        vLocalPos = displacedPos;
-        gl_Position = uMVP * vec4(displacedPos, 1.0);
+        vLocalPos = normPos * (1.0 + height);
+        
+        // Project using Camera-Relative VP matrix (passed as uMVP)
+        gl_Position = uMVP * vec4(vRelViewPos, 1.0);
       }
     )";
 
     const char* terrainFragSrc = R"(
       #version 330 core
-      in vec3 vWorldPos;
+      in vec3 vRelViewPos; // Camera-relative world position
       in vec3 vNormal;
       in vec2 vUV;
       in vec3 vLocalPos;
       in float vElevation;
 
       uniform vec3 uLightDir;
-      uniform vec3 uViewPos;
+      uniform vec3 uCamPos; // Use uCamPos for consistency, though we have vRelViewPos
       uniform float uTime;
 
       out vec4 FragColor;
@@ -2952,7 +3010,7 @@ R"(
       }
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
-        f = f * f * (3.0 - 2.0 * f);
+        f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
         return mix(mix(mix(hash(i),     hash(i+vec3(1,0,0)), f.x), 
                        mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
                    mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), 
@@ -2983,10 +3041,10 @@ R"(
 
       void main() {
         vec3 L = normalize(uLightDir);
-        vec3 V = normalize(uViewPos - vWorldPos);
+        vec3 V = normalize(-vRelViewPos); // Corrected: V is direction from point to camera
         
-        float distToCam = length(uViewPos - vWorldPos);
-        float detailFade = distToCam; // kilometers
+        float distToCam = length(vRelViewPos); // high precision now!
+        float detailFade = distToCam / 1000.0; // convert to km
 
         // --- INDUSTRIAL GRADE: PARALLAX OCCLUSION MAPPING (POM) ---
         vec3 pLocal = vLocalPos;
@@ -3143,9 +3201,14 @@ R"(
     terrainProg = compileProgram(terrainVertSrc, terrainFragSrc);
     ut_mvp = glGetUniformLocation(terrainProg, "uMVP");
     ut_model = glGetUniformLocation(terrainProg, "uModel");
+    ut_camPos = glGetUniformLocation(terrainProg, "uCamPos");
     ut_lightDir = glGetUniformLocation(terrainProg, "uLightDir");
     ut_viewPos = glGetUniformLocation(terrainProg, "uViewPos");
     ut_time = glGetUniformLocation(terrainProg, "uTime");
+    ut_nodePos = glGetUniformLocation(terrainProg, "uNodePos");
+    ut_nodeSide = glGetUniformLocation(terrainProg, "uNodeSide");
+    ut_nodeUp = glGetUniformLocation(terrainProg, "uNodeUp");
+    ut_planetCenterRel = glGetUniformLocation(terrainProg, "uPlanetCenterRel");
 
     // --- Vegetation Shader (Instanced) ---
     const char* vegVertSrc = R"(
@@ -3222,6 +3285,7 @@ R"(
     glGenBuffers(1, &treeInstanceVBO);
     
     initVegetationGeometry();
+    sharedPatchMesh = MeshGen::patch(32); // 32x32 segments per patch
     terrain = new Terrain::QuadtreeTerrain(EARTH_RADIUS);
     vegSystem = new Vegetation::VegetationSystem();
   }
@@ -3564,12 +3628,28 @@ R"(
       glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, mvp.m);
       glUniformMatrix4fv(ut_model, 1, GL_FALSE, model.m);
       glUniform3f(ut_lightDir, lightDir.x, lightDir.y, lightDir.z);
+      glUniform3f(ut_camPos, camPos.x, camPos.y, camPos.z); // Added ut_camPos
       glUniform3f(ut_viewPos, camPos.x, camPos.y, camPos.z);
       glUniform1f(ut_time, time);
       glUniform1f(glGetUniformLocation(terrainProg, "uMaxElevation"), maxElev);
       glUniform1f(glGetUniformLocation(terrainProg, "uPlanetRadius"), 6371000.0f); 
       
       mesh.draw();
+  }
+
+  void renderNode(Terrain::TerrainNode* node, float planetRadius, const Mat4& model, float time) {
+      if (!node) return;
+      if (node->isLeaf) {
+          // Bind uniforms for this patch
+          glUniform3f(ut_nodePos, node->center.x, node->center.y, node->center.z);
+          glUniform3f(ut_nodeSide, node->sideA.x, node->sideA.y, node->sideA.z);
+          glUniform3f(ut_nodeUp, node->sideB.x, node->sideB.y, node->sideB.z);
+          sharedPatchMesh.draw();
+      } else {
+          for (int i = 0; i < 4; i++) {
+              renderNode(node->children[i].get(), planetRadius, model, time);
+          }
+      }
   }
 
   void drawVegetation(const std::vector<Vegetation::InstanceData>& instances) {
@@ -3588,7 +3668,7 @@ R"(
       glBindVertexArray(0);
   }
 
-  void drawPlanet(const Mesh& mesh, const Mat4& model, BodyType type, float cr, float cg, float cb, float ca, float time = 0.0f, int bodyIdx = -1) {
+  void drawPlanet(const Mesh& mesh, const Mat4& model, BodyType type, float cr, float cg, float cb, float ca, float radius, float time = 0.0f, int bodyIdx = -1) {
     GLuint prog = earthProgram;
     GLint mvpLoc = ue_mvp, modelLoc = ue_model, lightLoc = ue_lightDir, viewLoc = ue_viewPos, colorLoc = -1, timeLoc = ue_time;
 
@@ -3621,26 +3701,80 @@ R"(
 
     // === TERRAIN INTEGRATION FOR EARTH ===
     if (bodyIdx == 3) {
-        drawTerrainPatch(mesh, model, 25000.0f, time); // 25km max elevation for prominent terrain
+        // --- TERRAIN LOD PASS ---
+        glUseProgram(terrainProg);
+        
+        // --- Explicit State Management ---
+        // Ensure Earth terrain is visible by fixing potential state leaks.
+        // All terrain patches are wound in Clockwise (CW) order.
+        glDisable(GL_CULL_FACE); 
+        glFrontFace(GL_CW);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        
+        // --- High-Precision Camera-Relative Rendering ---
+        // We use a View-Projection matrix that has NO translation (camera at origin)
+        // because the vertex shader computes positions relative to the camera.
+        Mat4 viewOnlyRot = view;
+        viewOnlyRot.m[12] = 0.0f; viewOnlyRot.m[13] = 0.0f; viewOnlyRot.m[14] = 0.0f;
+        Mat4 vpRel = proj * viewOnlyRot;
+        
+        glUniformMatrix4fv(ut_mvp, 1, GL_FALSE, vpRel.m);
+        glUniformMatrix4fv(ut_model, 1, GL_FALSE, model.m);
+        glUniform3f(ut_lightDir, lightDir.x, lightDir.y, lightDir.z);
+        glUniform3f(ut_viewPos, camPos.x, camPos.y, camPos.z);
+        glUniform3f(ut_camPos, camPos.x, camPos.y, camPos.z);
+        glUniform1f(ut_time, time);
+        glUniform1f(glGetUniformLocation(terrainProg, "uMaxElevation"), 25.0f); // Kilometers!
+        glUniform1f(glGetUniformLocation(terrainProg, "uPlanetRadius"), radius); 
+        
+        // 1. Planet center from model matrix translation components
+        Vec3 planetCenter(model.m[12], model.m[13], model.m[14]);
+        Vec3 planetCenterRel = planetCenter - camPos;
+        glUniform3f(ut_planetCenterRel, planetCenterRel.x, planetCenterRel.y, planetCenterRel.z);
+        
+        // 2. Extract rotation axes from model matrix to transform camera into Local Space
+        // Columns 0, 1, 2 represent X, Y, Z axes scaled by planet radius
+        Vec3 axisX(model.m[0], model.m[1], model.m[2]);
+        Vec3 axisY(model.m[4], model.m[5], model.m[6]);
+        Vec3 axisZ(model.m[8], model.m[9], model.m[10]);
+        // Normalize to get pure rotation
+        axisX = axisX.normalized();
+        axisY = axisY.normalized();
+        axisZ = axisZ.normalized();
+
+        // 3. Project camera-relative vector onto local axes (Inverse Rotation = Transpose)
+        Vec3 camPosInertialRel = -planetCenterRel; // vector from planet to camera
+        Vec3 camPosLocalRel(
+            camPosInertialRel.dot(axisX),
+            camPosInertialRel.dot(axisY),
+            camPosInertialRel.dot(axisZ)
+        );
+
+        // Update Quadtree subdivision based on local-space camera position
+        if (terrain) {
+            for (int i = 0; i < 6; i++) {
+                terrain->updateSubdivision(terrain->roots[i].get(), camPosLocalRel, radius);
+                renderNode(terrain->roots[i].get(), radius, model, time);
+            }
+        }
         
         // --- VEGETATION PASS (If close enough) ---
-        float camAlt = (camPos - Vec3(model.m[12], model.m[13], model.m[14])).length() - 1.0f; // Scale is 1.0 for mesh
-        if (camAlt < 0.05f) { // ~300km at scale
+        float camAlt = (camPos - planetCenter).length() - radius;
+        if (camAlt < 300.0f) { // 300km threshold
             std::vector<Vegetation::InstanceData> instances;
-            // Generate some semi-random instances near the camera's ground point
-            Vec3 camNorm = (camPos - Vec3(model.m[12], model.m[13], model.m[14])).normalized();
+            Vec3 camNorm = (camPos - planetCenter).normalized();
             for (int i = 0; i < 500; i++) {
-                // Low-fidelity Poisson-ish distribution near camera ground track
                 float offX = (hash11(i * 7) * 2 - 1) * 0.002f;
                 float offZ = (hash11(i * 13) * 2 - 1) * 0.002f;
-                
                 Vec3 p = (camNorm + Vec3(offX, 0, offZ)).normalized();
-                float h = terrain->getHeight(p) / EARTH_RADIUS;
-                if (h > 0.0f) { // Only on land
+                float h = terrain->getHeight(p) / radius;
+                if (h > 0.0f) { 
                     Vegetation::InstanceData id;
-                    Vec3 worldP = p * (1.0f + h);
-                    id.pos[0] = worldP.x; id.pos[1] = worldP.y; id.pos[2] = worldP.z;
-                    id.scale = (0.5f + 0.5f * hash11(i)) * (0.0001f); // Tiny relative to planet
+                    Vec3 localPos = p * (radius + h * radius);
+                    Vec3 worldP = localPos + planetCenter; // Keep coordinates in KM
+                    id.pos[0] = (float)worldP.x; id.pos[1] = (float)worldP.y; id.pos[2] = (float)worldP.z;
+                    id.scale = (0.5f + 0.5f * hash11(i)) * (0.02f); // 20m trees -> 0.02km
                     id.rot = hash11(i * 3) * 6.28f;
                     instances.push_back(id);
                 }

@@ -44,34 +44,88 @@ struct Noise {
 
 // --- Terrain Node for Quadtree ---
 struct TerrainNode {
-    Vec3 center;
-    float size;
+    Vec3 center;  // Center on the unit cube face
+    Vec3 sideA;   // Horizontal vector spanning this node on cube face
+    Vec3 sideB;   // Vertical vector spanning this node on cube face
+    float size;   // Current logical size (1.0 for root)
     int level;
     bool isLeaf = true;
     std::unique_ptr<TerrainNode> children[4];
     
-    // Geometric data
-    unsigned int vao = 0, vbo = 0, ebo = 0;
-    int indexCount = 0;
+    TerrainNode(Vec3 c, Vec3 sa, Vec3 sb, float s, int l) 
+        : center(c), sideA(sa), sideB(sb), size(s), level(l) {}
 
-    TerrainNode(Vec3 c, float s, int l) : center(c), size(s), level(l) {}
-    ~TerrainNode() {
-        // Cleanup OpenGL resources would happen in a renderer call
+    void subdivide() {
+        if (!isLeaf) return;
+        float s = size * 0.5f;
+        // Correct relative scaling: children are always 50% width/height of parent
+        Vec3 sa = sideA * 0.5f;
+        Vec3 sb = sideB * 0.5f;
+        // Quads: 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
+        children[0] = std::make_unique<TerrainNode>(center - sa * 0.5f + sb * 0.5f, sa, sb, s, level + 1);
+        children[1] = std::make_unique<TerrainNode>(center + sa * 0.5f + sb * 0.5f, sa, sb, s, level + 1);
+        children[2] = std::make_unique<TerrainNode>(center - sa * 0.5f - sb * 0.5f, sa, sb, s, level + 1);
+        children[3] = std::make_unique<TerrainNode>(center + sa * 0.5f - sb * 0.5f, sa, sb, s, level + 1);
+        isLeaf = false;
+    }
+
+    void collapse() {
+        if (isLeaf) return;
+        for(int i=0; i<4; i++) children[i].reset();
+        isLeaf = true;
     }
 };
 
 class QuadtreeTerrain {
 public:
     float planetRadius;
-    float maxElevation = 10000.0f; // 10km max height
+    float maxElevation = 25.0f; // 25km max height (Kilometers)
+    std::unique_ptr<TerrainNode> roots[6];
     
-    QuadtreeTerrain(float radius) : planetRadius(radius) {}
+    QuadtreeTerrain(float radius) : planetRadius(radius) {
+        // Initialize 6 faces of the cube
+        // +X, -X, +Y, -Y, +Z, -Z
+        roots[0] = std::make_unique<TerrainNode>(Vec3( 1, 0, 0), Vec3( 0, 0,-2), Vec3( 0, 2, 0), 1.0f, 0);
+        roots[1] = std::make_unique<TerrainNode>(Vec3(-1, 0, 0), Vec3( 0, 0, 2), Vec3( 0, 2, 0), 1.0f, 0);
+        roots[2] = std::make_unique<TerrainNode>(Vec3( 0, 1, 0), Vec3( 2, 0, 0), Vec3( 0, 0,-2), 1.0f, 0);
+        roots[3] = std::make_unique<TerrainNode>(Vec3( 0,-1, 0), Vec3( 2, 0, 0), Vec3( 0, 0, 2), 1.0f, 0);
+        roots[4] = std::make_unique<TerrainNode>(Vec3( 0, 0, 1), Vec3( 2, 0, 0), Vec3( 0, 2, 0), 1.0f, 0);
+        roots[5] = std::make_unique<TerrainNode>(Vec3( 0, 0,-1), Vec3(-2, 0, 0), Vec3( 0, 2, 0), 1.0f, 0);
+    }
+
+    // camPosRel: Camera position relative to the planet center (Kilometers)
+    // radius: Planet radius (Kilometers)
+    void updateSubdivision(TerrainNode* node, const Vec3& camPosRel, float radius) {
+        // 1. Calculate distance from camera to the closest point on the node's face
+        // Simple approximation: distance to projected center
+        Vec3 spherePos = node->center.normalized() * radius;
+        float dist = (spherePos - camPosRel).length();
+        
+        // 2. Horizon culling for LOD (Kilometers)
+        float camAlt = camPosRel.length();
+        // Add maxElevation safety to horizon distance to prevent clipping high mountains
+        float horizonDist = sqrtf(fmaxf(0.0f, camAlt * camAlt - radius * radius)) + maxElevation;
+        
+        // 3. Node visual size (Kilometers)
+        float nodeKm = node->size * radius * 2.0f;
+        
+        // 4. Subdivision logic: based on distance and visual size
+        // Increased distance multiplier (2.5 -> 3.0) for better continuity
+        // Relaxed horizon culling (nodeKm * 2.0f) to prevent gaps at large scales
+        bool shouldSubdivide = (dist < nodeKm * 3.0f) && (node->level < 16) && (dist < horizonDist + nodeKm * 2.0f);
+        
+        if (shouldSubdivide) {
+            node->subdivide();
+            for(int i=0; i<4; i++) updateSubdivision(node->children[i].get(), camPosRel, radius);
+        } else {
+            node->collapse();
+        }
+    }
 
     float getHeight(const Vec3& normalizedPos) {
-        // Match Earth shader logic: warpedFbm(sph * 3.5 * 1.2)
-        float hStr = Noise::warpedFbm(normalizedPos * 4.2f);
+        float hStr = Noise::warpedFbm(normalizedPos * 4.8f);
         float seaLevel = 0.44f;
-        if (hStr < seaLevel) return 0.0f; // Underwater
+        if (hStr < seaLevel) return 0.0f; 
         return (hStr - seaLevel) / (1.0f - seaLevel) * maxElevation;
     }
 
