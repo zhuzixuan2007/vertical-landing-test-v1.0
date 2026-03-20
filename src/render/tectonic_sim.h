@@ -25,6 +25,7 @@ public:
     std::vector<int> gridPlate;
     std::vector<Plate> plates;
     GLuint textureID = 0;
+    static constexpr float CONT_THRESHOLD = 0.45f;
 
     TectonicSimulator(int w, int h) : width(w), height(h) {
         gridHeight.assign(w * h, 0.0f);
@@ -177,7 +178,6 @@ public:
 
     void updateHeightFromForces(float dt, int gen) {
         std::vector<float> deltaHeight(width * height, 0.0f);
-        const float CONT_THRESHOLD = 0.45f; 
         
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -335,10 +335,29 @@ public:
             if (gen > 0 && gen % 20 == 0) handleReorganization();
         }
 
+        // Final Post-Simulation Refinement: Shredding thick islands into finer chains
+        std::vector<float> refinedHeight = gridHeight;
+        for (int i = 0; i < width * height; i++) {
+            float h = gridHeight[i];
+            if (h > CONT_THRESHOLD) {
+                Vec3 p = getSphericalPos(i % width, i / width);
+                // Selective Erosion: Carve into wide landmasses using fractal "shredding" noise
+                float shred = simpleNoise(p * 50.0f) * 0.15f; 
+                float boundaryNoise = simpleNoise(p * 15.0f) * 0.1f;
+                
+                // Shredding target: Only thin coastlines and young island arcs (0.45-0.55)
+                if (h < 0.55f) { 
+                    refinedHeight[i] -= (shred + boundaryNoise);
+                }
+            }
+        }
+        gridHeight = refinedHeight;
+
         // Final detailing tailored for 50-step runs
         for (int i = 0; i < width * height; i++) {
             Vec3 p = getSphericalPos(i % width, i / width);
-            float detail = (simpleNoise(p * 40.0f) - 0.5f) * 0.03f;
+            // High-frequency craggy noise
+            float detail = (simpleNoise(p * 55.0f) - 0.5f) * 0.035f;
             gridHeight[i] += detail;
         }
         smoothHeight(1);
