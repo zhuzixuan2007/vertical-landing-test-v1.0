@@ -175,7 +175,7 @@ public:
         }
     }
 
-    void updateHeightFromForces(float dt) {
+    void updateHeightFromForces(float dt, int gen) {
         std::vector<float> deltaHeight(width * height, 0.0f);
         const float CONT_THRESHOLD = 0.45f; 
         
@@ -206,39 +206,45 @@ public:
                         else if (!isC1 && !isC2) { 
                             if (plates[p1].density < plates[p2].density) { overridingIdx = i1; subductingIdx = i2; }
                             else { overridingIdx = i2; subductingIdx = i1; }
-                        } else { // Continent-Continent collision
-                            float uplift = -force * 5.5f * dt; 
+                        } else { // Continent-Continent collision: Building Shields
+                            float uplift = -force * 5.8f * dt; 
                             deltaHeight[i1] += uplift; deltaHeight[i2] += uplift;
                             plates[p1].omega *= 0.98f; plates[p2].omega *= 0.98f;
                             return;
                         }
 
-                        // PATCHY SUBDUCTION: Don't build a 100% solid wall.
-                        float subductionEfficiency = simpleNoise(pPos * 15.0f + Vec3(0, (float)plates[p1].density, 0));
-                        if (subductionEfficiency < 0.25f) { // Gap in the volcanic arc
-                             deltaHeight[overridingIdx] += force * 0.4f * dt; 
+                        // ANGLE-BASED ACCRETION: Only build if convergence is "head-on"
+                        // grazing collisions should stay as submerged ridges
+                        float convergenceAngle = relativeV.normalized().dot(-norm);
+                        if (convergenceAngle > 0.65f) { // ~50 degrees 
+                             float subductionEfficiency = simpleNoise(pPos * 25.0f + Vec3((float)gen, 0, 0));
+                             if (subductionEfficiency > 0.45f) { // High threshold for islands
+                                 float felsicRate = 0.15f * dt * (subductionEfficiency - 0.35f); 
+                                 deltaHeight[overridingIdx] += -force * 4.0f * dt; // Taller but localized
+                                 
+                                 int ox = overridingIdx % width, oy = overridingIdx / width;
+                                 for (int dy=-1; dy<=1; dy++) { 
+                                     for (int dx=-1; dx<=1; dx++) {
+                                         int sIdx = std::clamp(oy+dy, 0, height-1) * width + ((ox+dx+width)%width);
+                                         deltaHeight[sIdx] += felsicRate;
+                                     }
+                                 }
+                             }
                         } else {
-                            float felsicRate = 0.13f * dt * subductionEfficiency; 
-                            deltaHeight[overridingIdx] += -force * 3.5f * dt; 
-                            
-                            int ox = overridingIdx % width, oy = overridingIdx / width;
-                            for (int dy=-1; dy<=1; dy++) { 
-                                for (int dx=-1; dx<=1; dx++) {
-                                    int sIdx = std::clamp(oy+dy, 0, height-1) * width + ((ox+dx+width)%width);
-                                    deltaHeight[sIdx] += felsicRate;
-                                }
-                            }
+                             // Grazing: Minor uplift, no dry land
+                             deltaHeight[overridingIdx] += -force * 0.7f * dt; 
                         }
                         deltaHeight[subductingIdx] += force * 0.95f * dt; 
                     }
-                    else if (force > 0.012f) { // Divergence (Spreading Ridge - Lowered Threshold)
-                        float riftStrength = (gridHeight[i1] > CONT_THRESHOLD || gridHeight[i2] > CONT_THRESHOLD) ? 0.35f : 0.95f;
+                    else if (force > 0.012f) { // Divergence (Spreading Ridge)
+                        // AGGRESSIVE RIFTING: Rifts break landmasses easily
+                        bool isLand = gridHeight[i1] > CONT_THRESHOLD || gridHeight[i2] > CONT_THRESHOLD;
+                        float riftStrength = isLand ? 0.38f : 0.95f; 
                         float rift = -force * riftStrength * dt;
                         deltaHeight[i1] += rift; deltaHeight[i2] += rift;
                         
-                        // RIDG PUSH: More aggressive repulsion to prevent ocean enclosure
-                        plates[p1].pos = (plates[p1].pos + norm * (force * 0.0045f)).normalized();
-                        plates[p2].pos = (plates[p2].pos - norm * (force * 0.0045f)).normalized();
+                        plates[p1].pos = (plates[p1].pos + norm * (force * 0.005f)).normalized();
+                        plates[p2].pos = (plates[p2].pos - norm * (force * 0.005f)).normalized();
                     }
                 };
 
@@ -325,7 +331,7 @@ public:
             for (auto& p : plates) p.pos = rotateVector(p.pos, p.eulerPole, p.omega * dt);
             advectHeight(dt);
             updatePlateMapWithWarping((float)gen);
-            updateHeightFromForces(dt * 3.5f); // Scale forces to keep continental growth high in short window
+            updateHeightFromForces(dt * 3.5f, gen); // Pass gen for patchy noise
             if (gen > 0 && gen % 20 == 0) handleReorganization();
         }
 
