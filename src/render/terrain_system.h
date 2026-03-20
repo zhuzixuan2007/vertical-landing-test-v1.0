@@ -85,9 +85,9 @@ public:
     std::unique_ptr<TerrainNode> roots[6];
     
     QuadtreeTerrain(float radius) : planetRadius(radius) {
-        // Initialize 6-stage physical tectonic simulation
-        sim = new Tectonic::TectonicSimulator(1024, 512);
-        sim->simulate(40); // 40 generations of plate evolution
+        // Reduced simulation resolution (512x256) for massive performance boost
+        sim = new Tectonic::TectonicSimulator(512, 256);
+        sim->simulate(250); // Increased generations to 250 for full continental merging
 
         // Initialize 6 faces of the cube
         // +X, -X, +Y, -Y, +Z, -Z

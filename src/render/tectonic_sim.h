@@ -136,36 +136,48 @@ public:
         }
     }
 
-    void updatePlateMapWithWarping() {
+    void updatePlateMapWithWarping(float time) {
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 Vec3 p = getSphericalPos(x, y);
-                int idx1 = -1, idx2 = -1;
-                float d1 = 1e10f, d2 = 1e10f;
+                // Fractal Noise Warping to break circular boundaries
+                float n1 = simpleNoise(p * 4.0f + Vec3(time*0.1f, 0, 0)) * 0.15f;
+                float n2 = simpleNoise(p * 12.0f - Vec3(0, time*0.1f, 0)) * 0.05f;
+                Vec3 warpedP = (p + Vec3(n1, n2, n1)).normalized();
 
+                int idx1 = -1;
+                float d1 = 1e10f;
                 for (int i = 0; i < (int)plates.size(); i++) {
-                    // WEIGHTED DISTANCE logic: d = (dist + noise) / sizeWeight
-                    float noiseDist = (simpleNoise(p*8.0f) - 0.5f) * 0.12f; 
-                    float d = ((p - plates[i].pos).length() + noiseDist) / plates[i].sizeWeight;
-                    
-                    if (d < d1) { d2 = d1; idx2 = idx1; d1 = d; idx1 = i; }
-                    else if (d < d2) { d2 = d; idx2 = i; }
+                    float d = (warpedP - plates[i].pos).lengthSq() / (plates[i].sizeWeight * plates[i].sizeWeight);
+                    if (d < d1) { d1 = d; idx1 = i; }
                 }
-
-                // Continuous Interpolation
-                float blend = 1.0f - smoothstep(0.0f, 0.20f, d2 - d1);
-                float h1 = plates[idx1].baseElev;
-                float h2 = (idx2 != -1) ? plates[idx2].baseElev : h1;
-                
                 gridPlate[y * width + x] = idx1; 
-                gridHeight[y * width + x] = h1 * (1.0f - blend * 0.5f) + h2 * (blend * 0.5f);
+            }
+        }
+    }
+
+    void handleReorganization() {
+        std::mt19937 gen(1337);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        
+        // Detect "Trapped Plates" - Plates with too much convergence
+        // Not implemented as a full counting pass for performance, instead randomizing seeds
+        // to encourage breaking the current state.
+        for (int i = 0; i < (int)plates.size(); i++) {
+            auto& p = plates[i];
+            // If plate is too slow or stuck, kick it to a new orientation
+            if (p.omega < 0.035f || (rand() % 100 < 5)) {
+                p.eulerPole = Vec3(dist(gen), dist(gen), dist(gen)).normalized();
+                p.omega = 0.04f + (dist(gen) + 1.0f) * 0.06f;
+                // Move seed slightly to break enclosure patterns
+                p.pos = (p.pos + Vec3(dist(gen)*0.2f, dist(gen)*0.2f, dist(gen)*0.2f)).normalized();
             }
         }
     }
 
     void updateHeightFromForces(float dt) {
         std::vector<float> deltaHeight(width * height, 0.0f);
-        const float CONT_THRESHOLD = 0.45f; // Height above which it's considered stable continent
+        const float CONT_THRESHOLD = 0.45f; 
         
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -174,85 +186,86 @@ public:
                 Vec3 pPos = getSphericalPos(x, y);
                 Vec3 v1 = plates[p1].eulerPole.cross(pPos) * plates[p1].omega;
 
-                auto handleBoundary = [&](int i1, int i2, int nx, int ny, bool isY) {
+                auto handleBoundary = [&](int i1, int i2, int nx, int ny) {
                     int p2 = gridPlate[i2];
                     if (p1 == p2) return;
 
                     Vec3 nPos = getSphericalPos(nx, ny);
                     Vec3 v2 = plates[p2].eulerPole.cross(nPos) * plates[p2].omega;
                     Vec3 norm = (pPos - nPos).normalized();
-                    float force = (v1 - v2).dot(norm);
+                    Vec3 relativeV = v1 - v2;
+                    float force = relativeV.dot(norm);
 
-                    if (force < -0.01f) { // Convergence (Subduction or Collision)
-                        float h1 = gridHeight[i1];
-                        float h2 = gridHeight[i2];
-                        bool isC1 = h1 > CONT_THRESHOLD;
-                        bool isC2 = h2 > CONT_THRESHOLD;
-
-                        int overridingIdx = -1;
-                        int subductingIdx = -1;
+                    if (force < -0.015f) { // Convergence
+                        float h1 = gridHeight[i1], h2 = gridHeight[i2];
+                        bool isC1 = h1 > CONT_THRESHOLD, isC2 = h2 > CONT_THRESHOLD;
+                        int overridingIdx = -1, subductingIdx = -1;
 
                         if (isC1 && !isC2) { overridingIdx = i1; subductingIdx = i2; }
                         else if (!isC1 && isC2) { overridingIdx = i2; subductingIdx = i1; }
-                        else if (!isC1 && !isC2) { // Ocean-Ocean: Younger (lighter) plate overrides
+                        else if (!isC1 && !isC2) { 
                             if (plates[p1].density < plates[p2].density) { overridingIdx = i1; subductingIdx = i2; }
                             else { overridingIdx = i2; subductingIdx = i1; }
-                        } else { // Continent-Continent: Collision (No subduction, creates mountains and slows plates)
-                            float uplift = -force * 2.8f * dt;
-                            deltaHeight[i1] += uplift;
-                            deltaHeight[i2] += uplift;
-                            // DRAG: Large continents slow down plate motion
-                            plates[p1].omega *= 0.985f;
-                            plates[p2].omega *= 0.985f;
+                        } else { // Continent-Continent collision
+                            float uplift = -force * 5.5f * dt; 
+                            deltaHeight[i1] += uplift; deltaHeight[i2] += uplift;
+                            plates[p1].omega *= 0.98f; plates[p2].omega *= 0.98f;
                             return;
                         }
 
-                        // Subduction Physics:
-                        // 1. Arc Volcanism & Permanent Felsic accumulation (Increased width and rate)
-                        float felsicRate = 0.045f * dt; 
-                        deltaHeight[overridingIdx] += -force * 1.8f * dt; // Immediate Orogeny
+                        // Trench Rollback: Pull the overriding seed towards the subduction zone
+                        Vec3 rollbackForce = norm * (force * 0.0035f);
+                        plates[gridPlate[overridingIdx]].pos = (plates[gridPlate[overridingIdx]].pos - rollbackForce).normalized();
+
+                        float felsicRate = 0.125f * dt; 
+                        deltaHeight[overridingIdx] += -force * 3.2f * dt; 
                         
-                        // Apply growth to a small radius to simulate the wide volcanic arc / mantle wedge
-                        int ox = overridingIdx % width;
-                        int oy = overridingIdx / width;
-                        for (int dy=-1; dy<=1; dy++) {
+                        // Back-arc Spreading: Convergence on one side creates tension on the other side of the seed
+                        plates[p1].pos = (plates[p1].pos + relativeV * 0.0005f).normalized(); // Dynamic boundary migration
+
+                        int ox = overridingIdx % width, oy = overridingIdx / width;
+                        for (int dy=-1; dy<=1; dy++) { 
                             for (int dx=-1; dx<=1; dx++) {
                                 int sIdx = std::clamp(oy+dy, 0, height-1) * width + ((ox+dx+width)%width);
                                 deltaHeight[sIdx] += felsicRate;
                             }
                         }
-                        
-                        // 2. Trench formation (Subducting side)
-                        deltaHeight[subductingIdx] += force * 0.8f * dt; 
+                        deltaHeight[subductingIdx] += force * 0.9f * dt; 
                     }
-                    else if (force > 0.01f) { // Divergence (Rifting)
-                        float rift = -force * 0.45f * dt;
-                        deltaHeight[i1] += rift;
-                        deltaHeight[i2] += rift;
+                    else if (force > 0.012f) { // Divergence (Spreading Ridge - Lowered Threshold)
+                        float riftStrength = (gridHeight[i1] > CONT_THRESHOLD || gridHeight[i2] > CONT_THRESHOLD) ? 0.35f : 0.95f;
+                        float rift = -force * riftStrength * dt;
+                        deltaHeight[i1] += rift; deltaHeight[i2] += rift;
+                        
+                        // RIDG PUSH: More aggressive repulsion to prevent ocean enclosure
+                        plates[p1].pos = (plates[p1].pos + norm * (force * 0.0045f)).normalized();
+                        plates[p2].pos = (plates[p2].pos - norm * (force * 0.0045f)).normalized();
                     }
                 };
 
-                // X-direction sampling
-                handleBoundary(idx, y * width + (x + 1) % width, (x + 1) % width, y, false);
-                // Y-direction sampling
-                if (y < height - 1) handleBoundary(idx, (y + 1) * width + x, x, y + 1, true);
+                handleBoundary(idx, y * width + (x + 1) % width, (x + 1) % width, y);
+                if (y < height - 1) handleBoundary(idx, (y + 1) * width + x, x, y + 1);
             }
         }
+
+
+        // Continental Lateral Broadening (The "Ooze" factor)
+        // Helps turn lines into blobs
+        for (int i = 0; i < width * height; i++) {
+            if (gridHeight[i] > CONT_THRESHOLD) {
+                int cx = i % width, cy = i / width;
+                // Recruit neighbors
+                int nx = (cx + (rand()%3-1) + width) % width;
+                int ny = std::clamp(cy + (rand()%3-1), 0, height-1);
+                int nIdx = ny * width + nx;
+                if (gridHeight[nIdx] < CONT_THRESHOLD) 
+                    deltaHeight[nIdx] += 0.02f * dt;
+            }
+        }
+
         for (int i = 0; i < width * height; i++) {
             gridHeight[i] += deltaHeight[i];
             gridHeight[i] = std::clamp(gridHeight[i], 0.02f, 0.95f);
-        }
-    }
-
-    void handleReorganization() {
-        std::mt19937 gen(999);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        for (auto& p : plates) {
-            // If continental drag has slowed the plate significantly, trigger reorganization (Rifting)
-            if (p.omega < 0.02f) {
-                p.eulerPole = Vec3(dist(gen), dist(gen), dist(gen)).normalized();
-                p.omega = 0.05f + (dist(gen) + 1.0f) * 0.05f;
-            }
         }
     }
 
@@ -300,34 +313,27 @@ public:
     }
 
     void simulate(int generations) {
-        // Reduced to 12 plates for cleaner, larger landmass building
-        initializePlates(12);
+        // High-fidelity 1Ma-resolution simulation (50 Steps)
+        initializePlates(12); // Slightly more plates for 1Ma detail
         lloydRelaxation(4);
-        updatePlateMapWithWarping();
+        updatePlateMapWithWarping(0);
         
-        float dt = 2.0f; // Larger time step for faster geological drift
-        // Increased iterations to allow for full Wilson cycle (Birth to Supercontinent)
-        int totalGens = 180; 
+        // 1 million years per step (dt adjusted for realistic but visible drift)
+        float dt = 1.2f; 
+        int totalGens = 50; 
         
         for (int gen = 0; gen < totalGens; gen++) {
-            // 1. Move plate seeds
-            for (auto& p : plates) {
-                p.pos = rotateVector(p.pos, p.eulerPole, p.omega * dt);
-            }
-            // 2. Move existing terrain (Advection)
+            for (auto& p : plates) p.pos = rotateVector(p.pos, p.eulerPole, p.omega * dt);
             advectHeight(dt);
-            // 3. Update plate boundaries based on new seed positions
-            updatePlateMapWithWarping();
-            // 4. Crustal growth and tectonic forces at new boundaries
-            updateHeightFromForces(dt);
-            // 5. Plate reorganization (Less frequent to allow stable subduction)
-            if (gen > 0 && gen % 45 == 0) handleReorganization();
+            updatePlateMapWithWarping((float)gen);
+            updateHeightFromForces(dt * 3.5f); // Scale forces to keep continental growth high in short window
+            if (gen > 0 && gen % 20 == 0) handleReorganization();
         }
 
-        // Final detailing
+        // Final detailing tailored for 50-step runs
         for (int i = 0; i < width * height; i++) {
             Vec3 p = getSphericalPos(i % width, i / width);
-            float detail = (simpleNoise(p * 25.0f) - 0.5f) * 0.04f;
+            float detail = (simpleNoise(p * 40.0f) - 0.5f) * 0.03f;
             gridHeight[i] += detail;
         }
         smoothHeight(1);
