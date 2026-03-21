@@ -450,6 +450,7 @@ public:
   Vec3 camPos;
   Vec3 lightDir;
 
+  GLint ut_hydroMap = -1;
   Mesh sharedPatchMesh;
   Terrain::QuadtreeTerrain* terrain = nullptr;
   Vegetation::VegetationSystem* vegSystem = nullptr;
@@ -2924,12 +2925,16 @@ R"(
       uniform vec3 uNodePos;
       uniform vec3 uNodeSide;
       uniform vec3 uNodeUp;
+      
+      uniform sampler2D uTectonicMap;
+      uniform sampler2D uHydroMap; // R: FilledHeight (Lake surface), G: Acc, B: Strahler
 
       out vec3 vRelViewPos; // Point position relative to camera
       out vec3 vNormal;
       out vec2 vUV;
       out vec3 vLocalPos;
       out float vElevation;
+      out float vWaterDepth;
 
       // Noise functions (matching Earth shader for consistency)
       float hash(vec3 p) {
@@ -2951,71 +2956,70 @@ R"(
         float v = 0.0, amp = 0.5;
         for (int i = 0; i < oct; i++) {
           v += noise3d(p) * amp;
-          p = p * 2.15 + vec3(0.131, -0.217, 0.344); // Increased lacunarity for more detail
+          p = p * 2.15 + vec3(0.131, -0.217, 0.344); 
           amp *= 0.47;
         }
         return v;
       }
       float warpedFbm(vec3 p) {
         vec3 q = vec3(fbm(p, 4), fbm(p + vec3(5.2, 1.3, 2.8), 4), fbm(p + vec3(9.1, 4.7, 3.1), 4));
-        return fbm(p + q * 1.8, 10); // Increased detail and warping
+        return fbm(p + q * 1.8, 10);
       }
-
-        uniform sampler2D uTectonicMap;
-
-        float getPlateBase(vec3 p) {
-            // Equirectangular mapping: theta=[-PI, PI], phi=[0, PI]
-            float phi = acos(clamp(p.y, -1.0, 1.0));
-            float theta = atan(p.z, p.x);
-            vec2 uv = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
-            return texture(uTectonicMap, uv).r;
-        }
 
       void main() {
         // 1. Warping flat patch (-0.5 to 0.5) to unit cube face
         vec3 cubePos = uNodePos + aPos.x * uNodeSide + aPos.z * uNodeUp;
         vec3 normPos = normalize(cubePos);
         
-        // 2. Sample procedural height (Kilometers)
-        float plateBase = getPlateBase(normPos);
+        // 2. Fetch base geological elevation
+        float phi = acos(clamp(normPos.y, -1.0, 1.0));
+        float theta = atan(normPos.z, normPos.x);
+        vec2 geoUV = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
+        float plateBase = texture(uTectonicMap, geoUV).r;
         float noise = warpedFbm(normPos * 6.5);
         
-        // Additive Blending with Noise Scaling (More detail on land)
+        // Additive Blending with Noise Scaling
         float landMask = smoothstep(0.4, 0.6, plateBase);
         float hStr = plateBase + (noise - 0.5) * (0.12 + 0.06 * landMask);
         
-        // Continental Shelf Logic: Plateau in the 0.38-0.44 range
+        // 3. Hydrology: Geometric lake/river flattening
+        vec4 hydro = texture(uHydroMap, geoUV);
+        float filledH = hydro.r; 
+        float lakeMask = smoothstep(0.0001, 0.01, filledH - hStr);
+        
+        // Soft-flatten ground to lake surface level
+        float originalH = hStr;
+        hStr = mix(hStr, filledH, lakeMask * 0.98); 
+        vWaterDepth = max(0.0, filledH - originalH);
+
         float seaLevel = 0.44;
+        // Continental Shelf Logic
         if (hStr < seaLevel && hStr > 0.38) {
             float shelfT = (hStr - 0.38) / (seaLevel - 0.38);
             hStr = mix(0.39, seaLevel - 0.002, smoothstep(0.0, 1.0, shelfT));
         }
         
-        // Further shape the profile: flatten oceans, sharpen peaks
         if (hStr < seaLevel) hStr = hStr * 0.6 + 0.176; 
         float landH = max(0.0, (hStr - seaLevel) / (1.0 - seaLevel));
         float height = landH * uMaxElevation / uPlanetRadius;
         
-        // --- KSC FLATTENING (Geometry Sync) ---
+        // --- KSC FLATTENING ---
         vec3 kscPos = vec3(0.145, -0.867, 0.477);
         float kscDist = length(normPos - kscPos);
         float kscMask = smoothstep(0.08, 0.02, kscDist); 
         height = mix(height, 0.005 / uPlanetRadius, kscMask); 
         
-        // Prevent radical ocean displacement
-        if (hStr < seaLevel) height = -0.0005;
+        if (hStr < seaLevel) height = -0.0001; // Water depth handled by shader
         
-        // 3. Compute High-Precision Relative Position (Camera-Relative Rendering)
-        // Extract local rotation-scale and apply to compute position relative to planet center
+        // 4. Compute High-Precision Relative Position
         mat3 localRotScale = mat3(uModel); 
         vRelViewPos = uPlanetCenterRel + localRotScale * (normPos * (1.0 + height));
         
         vElevation = hStr; 
         vNormal = localRotScale * normPos; 
         vUV = aUV;
-        vLocalPos = normPos * (1.0 + height);
+        vLocalPos = normPos;
         
-        // Project using Camera-Relative VP matrix (passed as uMVP)
         gl_Position = uMVP * vec4(vRelViewPos, 1.0);
       }
     )";
@@ -3033,9 +3037,12 @@ R"(
       uniform float uTime;
       uniform sampler2D uTectonicMap;
       uniform sampler2D uClimateMap;
+      uniform sampler2D uHydroMap;
       uniform int uViewMode; // 0: Normal, 1: Temperature, 2: Precipitation, 3: Pressure
 
       out vec4 FragColor;
+
+      in float vWaterDepth;
 
       float hash(vec3 p) {
         p = fract(p * vec3(443.897, 441.423, 437.195));
@@ -3142,11 +3149,11 @@ R"(
         vec3 surfColor;
         float waterAlpha = 0.0;
         
-        if (h < seaLevel) {
-            float waterDepth = (seaLevel - h) / seaLevel;
-            surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.5, waterDepth));
+        if (h < seaLevel || vWaterDepth > 0.0001) {
+            float depth = (h < seaLevel) ? (seaLevel - h) / seaLevel : vWaterDepth * 15.0;
+            surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.45, depth));
             // Shoreline foam effect
-            float shore = smoothstep(0.005, 0.0, seaLevel - h);
+            float shore = (h < seaLevel) ? smoothstep(0.005, 0.0, seaLevel - h) : smoothstep(0.005, 0.0, vWaterDepth);
             surfColor = mix(surfColor, vec3(0.8, 0.9, 1.0), shore * 0.4);
             waterAlpha = 1.0;
         } else {
@@ -3225,20 +3232,17 @@ R"(
                 vColor = mix(vec3(0,0,1), vec3(1,1,1), smoothstep(0.0, 0.5, press));
                 vColor = mix(vColor, vec3(1,0,0), smoothstep(0.5, 1.0, press));
             } else if (uViewMode == 4) {
-                // Hydrology: River network (Strahler Hierarchy)
-                float strahler = floor(climate.a);
-                float logAcc = fract(climate.a);
+                // Hydrology: River network (Strahler Hierarchy) + Lakes
+                vec4 hydroData = texture(uHydroMap, climUV);
+                float strahler = hydroData.b;
                 
                 // Background
                 vColor = vec3(0.9, 0.85, 0.75);
                 
-                // Discrete thresholds to ensure 1-pixel skeletal lines
                 if (strahler >= 1.0) {
-                    // Color based on stream order
-                    vec3 branchColor = vec3(0.4, 0.7, 1.0);     // Light blue/Headwaters
-                    vec3 trunkColor = vec3(0.0, 0.15, 0.6);   // Deep blue/Major trunks
-                    vColor = mix(branchColor, trunkColor, smoothstep(1.0, 7.0, strahler));
+                    vColor = mix(vec3(0.4, 0.7, 1.0), vec3(0.0, 0.15, 0.6), smoothstep(1.0, 7.0, strahler));
                 }
+                if (vWaterDepth > 0.0001) vColor = vec3(0.0, 0.3, 0.9); // Highlight lakes
             }
             
             // Apply simple shading to the map
@@ -3253,22 +3257,15 @@ R"(
             float theta = atan(vLocalPos.z, vLocalPos.x);
             vec2 climUV = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
             
-            // Domain Warping: Use high-frequency noise to organic-ize the low-res grid sampling
-            // This prevents the "rectangular blocks" when zooming in.
             float organicJitter = warpedNoise(vLocalPos * 12.0) * 0.003;
             vec2 searchUV = climUV + vec2(organicJitter);
             
-            float hydroData = texture(uClimateMap, searchUV).a;
-            float strahler = floor(hydroData);
+            vec4 hydroData = texture(uHydroMap, searchUV);
+            float strahler = hydroData.b;
             
-            // Major rivers only (Strahler Order 3+)
             if (strahler >= 3.0 && vElevation > 0.445) {
-                // Procedural detail: use high-frequency terrain noise to define the river "spine"
-                // within the low-res hydrology area. This carves the fat 512-grid block into a fine line.
                 float spine = warpedNoise(vLocalPos * 150.0 + organicJitter * 20.0);
                 float widthThreshold = 0.52 - (strahler - 3.0) * 0.04;
-                
-                // Combine low-res hydrology skeleton with high-res noise spine
                 float riverMask = smoothstep(widthThreshold + 0.05, widthThreshold, spine);
                 
                 if (riverMask > 0.01) {
@@ -3321,6 +3318,7 @@ R"(
     ut_planetCenterRel = glGetUniformLocation(terrainProg, "uPlanetCenterRel");
     ut_tectonicMap = glGetUniformLocation(terrainProg, "uTectonicMap");
     ut_climateMap = glGetUniformLocation(terrainProg, "uClimateMap");
+    ut_hydroMap = glGetUniformLocation(terrainProg, "uHydroMap");
     ut_viewMode = glGetUniformLocation(terrainProg, "uViewMode");
 
     // --- Vegetation Shader (Instanced) ---
@@ -3853,6 +3851,11 @@ R"(
             glActiveTexture(GL_TEXTURE5);
             glBindTexture(GL_TEXTURE_2D, terrain->getClimateTexture());
             glUniform1i(ut_climateMap, 5);
+        }
+        if (terrain && terrain->getHydroTexture() != 0) {
+            glActiveTexture(GL_TEXTURE6);
+            glBindTexture(GL_TEXTURE_2D, terrain->getHydroTexture());
+            glUniform1i(ut_hydroMap, 6);
         }
         glUniform1i(ut_viewMode, climateViewMode);
         

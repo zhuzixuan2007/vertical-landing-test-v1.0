@@ -109,7 +109,8 @@ public:
             float logAcc = acc > 0.0f ? std::min(0.95f, log10f(1.0f + acc) / 6.0f) : 0.0f;
             climateSim->data.moisture[i] = s + logAcc;
         }
-        climateSim->bake(); // Re-bake with river data in Alpha channel
+        climateSim->bake(); 
+        hydroSim->bake(); // Dedicated hydro texture for vertex-side height correction
 
         // Initialize 6 faces of the cube
         // +X, -X, +Y, -Y, +Z, -Z
@@ -140,7 +141,7 @@ public:
         // 4. Subdivision logic: based on distance and visual size
         // Increased distance multiplier (2.5 -> 3.0) for better continuity
         // Relaxed horizon culling (nodeKm * 2.0f) to prevent gaps at large scales
-        bool shouldSubdivide = (dist < nodeKm * 3.0f) && (node->level < 16) && (dist < horizonDist + nodeKm * 2.0f);
+        bool shouldSubdivide = (dist < nodeKm * 3.0f) && (node->level < 20) && (dist < horizonDist + nodeKm * 2.0f);
         
         if (shouldSubdivide) {
             node->subdivide();
@@ -164,6 +165,10 @@ public:
 
     GLuint getClimateTexture() {
         return climateSim ? climateSim->data.textureID : 0;
+    }
+
+    GLuint getHydroTexture() {
+        return hydroSim ? hydroSim->textureID : 0;
     }
 };
 

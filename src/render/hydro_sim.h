@@ -29,8 +29,8 @@ public:
 
     // Main Entry Point
     void simulate(const std::vector<float>& heightMap, const std::vector<float>& precipitation, const std::vector<float>& temperature) {
-        data.flowDir.assign(width * height, -1);
         fillDepressions(heightMap);
+        calculateFlowDirections();
         calculateAccumulation(precipitation, temperature, heightMap);
         calculateStrahlerOrder();
     }
@@ -47,11 +47,6 @@ private:
         std::priority_queue<Node, std::vector<Node>, std::greater<Node>> pq;
         std::vector<bool> visited(width * height, false);
 
-        int dx[] = {1, 1, 0, -1, -1, -1, 0, 1}; // E, SE, S, SW, W, NW, N, NE
-        int dy[] = {0, 1, 1, 1, 0, -1, -1, -1};
-        int reverseDir[] = {4, 5, 6, 7, 0, 1, 2, 3}; 
-
-        // Seed with oceanic pixels
         float seaLevel = 0.45f;
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -62,6 +57,9 @@ private:
                 }
             }
         }
+
+        int dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+        int dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 
         while (!pq.empty()) {
             Node curr = pq.top(); pq.pop();
@@ -76,10 +74,34 @@ private:
                     if (data.filledHeight[nIdx] < curr.h) {
                         data.filledHeight[nIdx] = curr.h;
                     }
-                    // Flow direction points back to the explorer that provided path to ocean
-                    data.flowDir[nIdx] = reverseDir[i];
                     pq.push({nx, ny, data.filledHeight[nIdx]});
                 }
+            }
+        }
+    }
+
+    void calculateFlowDirections() {
+        int dx[] = {1, 1, 0, -1, -1, -1, 0, 1}; // 0:E, 1:SE, 2:S, 3:SW, 4:W, 5:NW, 6:N, 7:NE
+        int dy[] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int idx = y * width + x;
+                float maxSlope = 0.0001f;
+                int bestDir = -1;
+
+                for (int i = 0; i < 8; i++) {
+                    int nx = (x + dx[i] + width) % width;
+                    int ny = std::clamp(y + dy[i], 0, height-1);
+                    int nIdx = ny * width + nx;
+
+                    float drop = data.filledHeight[idx] - data.filledHeight[nIdx];
+                    if (drop > maxSlope) {
+                        maxSlope = drop;
+                        bestDir = i;
+                    }
+                }
+                data.flowDir[idx] = bestDir;
             }
         }
     }
@@ -89,13 +111,14 @@ private:
         std::vector<Cell> sortedCells;
         sortedCells.reserve(width * height);
         for (int i = 0; i < width * height; i++) sortedCells.push_back({i, data.filledHeight[i]});
+        
         std::sort(sortedCells.begin(), sortedCells.end(), [](const Cell& a, const Cell& b) {
             return a.h > b.h;
         });
 
         data.accumulation.assign(width * height, 0.0f);
         for (int i = 0; i < width * height; i++) {
-            float evap = std::max(0.0f, temp[i] + 12.0f) * 0.006f; 
+            float evap = std::max(0.0f, temp[i] + 10.0f) * 0.005f; 
             float netWater = std::max(0.001f, precip[i] - evap);
             if (heightMap[i] <= 0.45f) netWater = 0.0f;
             data.accumulation[i] = netWater;
@@ -118,6 +141,7 @@ private:
 
     void calculateStrahlerOrder() {
         data.strahler.assign(width * height, 0);
+        
         std::vector<std::vector<int>> contributors(width * height);
         int dx[] = {1, 1, 0, -1, -1, -1, 0, 1}; 
         int dy[] = {0, 1, 1, 1, 0, -1, -1, -1};
@@ -133,7 +157,9 @@ private:
 
         struct Cell { int idx; float h; };
         std::vector<Cell> sortedCells;
+        sortedCells.reserve(width * height);
         for (int i = 0; i < width * height; i++) sortedCells.push_back({i, data.filledHeight[i]});
+        
         std::sort(sortedCells.begin(), sortedCells.end(), [](const Cell& a, const Cell& b) {
             return a.h > b.h;
         });
@@ -142,6 +168,7 @@ private:
             int idx = cell.idx;
             if (contributors[idx].empty()) {
                 if (data.accumulation[idx] > 0.05f) data.strahler[idx] = 1;
+                else data.strahler[idx] = 0;
             } else {
                 int maxOrder = 0;
                 int countMax = 0;
@@ -159,6 +186,29 @@ private:
             }
         }
     }
+
+public:
+    void bake() {
+        if (textureID == 0) glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        
+        // R: FilledHeight (for Lake flattening), G: Accumulation, B: Strahler, A: Placeholder
+        std::vector<float> textureData(width * height * 4, 0.0f);
+        for (int i = 0; i < width * height; i++) {
+            textureData[i * 4 + 0] = data.filledHeight[i];
+            textureData[i * 4 + 1] = data.accumulation[i];
+            textureData[i * 4 + 2] = (float)data.strahler[i];
+            textureData[i * 4 + 3] = 0.0f;
+        }
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, textureData.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    GLuint textureID = 0;
 };
 
 } // namespace Hydro
