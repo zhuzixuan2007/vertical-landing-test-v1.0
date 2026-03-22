@@ -56,9 +56,30 @@ struct Noise {
         return v;
     }
 
-    static float warpedFbm(Vec3 p) {
-        Vec3 q(fbm(p, 4), fbm(p + Vec3(5.2f, 1.3f, 2.8f), 4), fbm(p + Vec3(9.1f, 4.7f, 3.1f), 4));
-        return fbm(p + q * 1.8f, 10);
+    static float ridgedFbm(const Vec3& p, int octaves) {
+        float v = 0.0f, amp = 0.5f, freq = 1.05f;
+        for (int i = 0; i < octaves; i++) {
+            float n = 1.0f - fabsf(noise(p * freq) * 2.0f - 1.0f);
+            v += n * n * amp;
+            freq *= 2.07f;
+            amp *= 0.48f;
+        }
+        return v;
+    }
+
+    static float mountainNoise(Vec3 p) {
+        // Domain Warp: offset sampling pos with another FBM
+        Vec3 offset(
+            fbm(p * 2.0f + Vec3(0.0f, 0.0f, 0.0f), 3),
+            fbm(p * 2.0f + Vec3(5.2f, 1.3f, 0.7f), 3),
+            fbm(p * 2.0f + Vec3(2.7f, 8.4f, 3.1f), 3)
+        );
+        return ridgedFbm(p + offset * 0.15f, 6);
+    }
+    static float detail10m(const Vec3& p) {
+        float n = noise(p * 2500000.0f);
+        n += noise(p * 5000000.0f) * 0.5f;
+        return n * 0.0000015f; 
     }
 };
 
@@ -173,51 +194,150 @@ public:
         return t * t * (3.0f - 2.0f * t);
     }
 
+    // Feature-Aware Sharply Interpolated Sampling
+    float sampleTectonic(float u, float v) {
+        if (!sim || sim->gridHeight.empty()) return 0.5f;
+        float fx = u * (sim->width - 1);
+        float fy = v * (sim->height - 1);
+        int x0 = (int)fx, y0 = (int)fy;
+        int x1 = (x0 + 1) % sim->width, y1 = std::min(sim->height - 1, y0 + 1);
+        float tx = fx - x0, ty = fy - y0;
+
+        float h00 = sim->gridHeight[y0 * sim->width + x0] / 255.0f;
+        float h10 = sim->gridHeight[y0 * sim->width + x1] / 255.0f;
+        float h01 = sim->gridHeight[y1 * sim->width + x0] / 255.0f;
+        float h11 = sim->gridHeight[y1 * sim->width + x1] / 255.0f;
+
+        // Bilinear base
+        float base = h00*(1-tx)*(1-ty) + h10*tx*(1-ty) + h01*(1-tx)*ty + h11*tx*ty;
+        
+        // Feature detection: Sharpen ridges/valleys if gradient is high
+        float grad = sqrtf((h10-h00)*(h10-h00) + (h01-h00)*(h01-h00));
+        if (grad > 0.05f) {
+            float fx_sharp = tx * tx * (3.0f - 2.0f * tx);
+            float fy_sharp = ty * ty * (3.0f - 2.0f * ty);
+            float sharp = (h00*(1-fx_sharp)*(1-fy_sharp) + h10*fx_sharp*(1-fy_sharp) + 
+                           h01*(1-fx_sharp)*fy_sharp + h11*fx_sharp*fy_sharp);
+            base = Noise::mix(base, sharp, 0.45f);
+        }
+        return base;
+    }
+
     float getHeight(const Vec3& normalizedPos) {
         float phi = std::acos(std::clamp((float)normalizedPos.y, -1.0f, 1.0f));
         float theta = std::atan2((float)normalizedPos.z, (float)normalizedPos.x);
         float u = theta / (2.0f * PI) + 0.5f;
         float v = phi / PI;
 
-        float plateBase = 0.5f;
-        if (sim && !sim->gridHeight.empty()) {
-            int tx = std::clamp((int)(u * sim->width), 0, sim->width - 1);
-            int ty = std::clamp((int)(v * sim->height), 0, sim->height - 1);
-            plateBase = sim->gridHeight[ty * sim->width + tx] / 255.0f;
+        float plateBase = sampleTectonic(u, v);
+        float hRefined = plateBase;
+        
+        // --- PRE-CALCULATE BIOMES ---
+        float mountainMask = smoothstep_local(0.55f, 0.75f, plateBase);
+        float plainsMask = 1.0f - smoothstep_local(0.40f, 0.62f, plateBase);
+        float coastalMask = smoothstep_local(0.435f, 0.445f, plateBase) * (1.0f - smoothstep_local(0.455f, 0.465f, plateBase));
+        
+        // Climate lookup (for dunes/ice)
+        float temp = 0.5f, precip = 0.5f;
+        if (climateSim) {
+            int tx = std::clamp((int)(u * (climateSim->width - 1)), 0, climateSim->width - 1);
+            int ty = std::clamp((int)(v * (climateSim->height - 1)), 0, climateSim->height - 1);
+            temp = (climateSim->data.temperature[ty * climateSim->width + tx] + 30.0f) / 70.0f;
+            precip = climateSim->data.precipitation[ty * climateSim->width + tx] / 2000.0f;
         }
 
-        float noise = Noise::warpedFbm(normalizedPos * 6.5f);
-        float landMask = smoothstep_local(0.4f, 0.6f, plateBase);
-        float hStr = plateBase + (noise - 0.5f) * (0.12f + 0.06f * landMask);
+        // --- LAYER 1: REGIONAL GEOLOGICAL SCULPTING ---
 
-        float filledH = 0.0f;
+        // 1.1 Mountains: Anisotropic Folding + Thermal Erosion
+        if (mountainMask > 0.01f) {
+            float epsG = 0.005f;
+            float hX = (sampleTectonic(u + epsG, v) - sampleTectonic(u - epsG, v));
+            float hY = (sampleTectonic(u, v + epsG) - sampleTectonic(u, v - epsG));
+            float sAngle = std::atan2(-hX, hY);
+            float ca = std::cos(sAngle), sa = std::sin(sAngle);
+            
+            float strikeU = normalizedPos.x * ca - normalizedPos.z * sa;
+            float strikeV = normalizedPos.x * sa + normalizedPos.z * ca;
+            Vec3 pS(strikeU * 0.72f, normalizedPos.y, strikeV * 1.28f);
+            
+            float ridges = Noise::mountainNoise(pS * 6.5f);
+            hRefined += ridges * 0.18f * mountainMask;
+            
+            // Thermal Erosion: smooth sharp peaks
+            if (hRefined > 0.78f) {
+                float peakD = smoothstep_local(0.78f, 0.96f, hRefined);
+                hRefined -= peakD * 0.045f;
+            }
+        }
+
+        // 1.2 Biome-Specific Layer (Dunes / Glaciers)
+        if (temp > 0.75f && precip < 0.15f && plainsMask > 0.2f) {
+            // Desert Dunes: Stretched along "Wind" (approx longitude)
+            float dune = 1.0f - fabsf(Noise::noise(Vec3(normalizedPos.x * 2.5f, normalizedPos.y, normalizedPos.z * 0.3f) * 150.0f) * 2.0f - 1.0f);
+            hRefined += dune * 0.008f * plainsMask;
+        }
+        
+        // 1.3 Coastal Cliffs
+        if (coastalMask > 0.1f) {
+            float cliffNoise = 1.0f - fabsf(Noise::noise(normalizedPos * 180.0f) * 1.5f - 0.5f);
+            hRefined += smoothstep_local(0.6f, 0.9f, cliffNoise) * 0.007f * coastalMask;
+        }
+
+        // --- LAYER 2: LOCAL GEOLOGICAL SCULPTING (Physics-Ready) ---
+
+        // 2.1 River Valley Carving (V-to-U shaped)
+        if (hydroSim && hydroSim->data.strahler.size() > 0) {
+            int tx = std::clamp((int)(u * (hydroSim->width - 1)), 0, (int)hydroSim->width - 1);
+            int ty = std::clamp((int)(v * (hydroSim->height - 1)), 0, (int)hydroSim->height - 1);
+            float s = (float)hydroSim->data.strahler[ty * hydroSim->width + tx];
+            if (s >= 2.0f && plateBase > 0.445f) {
+                // Approximate valley using local distance noise
+                float valleyWarp = Noise::noise(normalizedPos * 120.0f) * 0.004f;
+                float vNoise = Noise::noise(normalizedPos * 250.0f + Vec3(valleyWarp, valleyWarp, valleyWarp));
+                float depth = 0.015f * (s / 7.0f); // Depth scale by Strahler
+                
+                // V-shape (Mountain) to U-shape (Plains) based on height
+                float isLowland = 1.0f - smoothstep_local(0.45f, 0.55f, plateBase);
+                float vShape = fabsf(vNoise * 2.0f - 1.0f);
+                float uShape = powf(vShape, 0.4f);
+                float valleyProfile = Noise::mix(vShape, uShape, isLowland);
+                
+                hRefined -= (1.0f - valleyProfile) * depth;
+            }
+        }
+
+        // 2.2 Micro-Mounds & Boulders (Local collision)
+        float mounds = Noise::noise(normalizedPos * 1200.0f);
+        hRefined += (mounds - 0.5f) * 0.0008f;
+
+        // --- Hydrology Integration (Lakes) ---
         if (hydroSim && hydroSim->data.filledHeight.size() > 0) {
-            int tx = std::clamp((int)(u * hydroSim->width), 0, hydroSim->width - 1);
-            int ty = std::clamp((int)(v * hydroSim->height), 0, hydroSim->height - 1);
-            filledH = hydroSim->data.filledHeight[ty * hydroSim->width + tx] / 255.0f;
+            int tx = std::clamp((int)(u * (hydroSim->width - 1)), 0, hydroSim->width - 1);
+            int ty = std::clamp((int)(v * (hydroSim->height - 1)), 0, hydroSim->height - 1);
+            float filledH = hydroSim->data.filledHeight[ty * (int)hydroSim->width + tx] / 255.0f;
+            float hydroMask = smoothstep_local(0.0001f, 0.01f, filledH - plateBase);
+            hRefined = Noise::mix(hRefined, filledH, hydroMask * 0.97f);
         }
 
-        float lakeMask = smoothstep_local(0.0001f, 0.01f, filledH - hStr);
-        hStr = hStr + (filledH - hStr) * lakeMask * 0.98f;
-
+        // Sea Level Normalization
         float seaLevel = 0.44f;
-        if (hStr < seaLevel && hStr > 0.38f) {
-            float shelfT = (hStr - 0.38f) / (seaLevel - 0.38f);
-            hStr = 0.39f + (seaLevel - 0.002f - 0.39f) * smoothstep_local(0.0f, 1.0f, shelfT);
+        if (hRefined < seaLevel && hRefined > 0.38f) {
+            float shelfT = (hRefined - 0.38f) / (seaLevel - 0.38f);
+            hRefined = 0.395f + (seaLevel - 0.001f - 0.395f) * smoothstep_local(0.0f, 1.0f, shelfT);
         }
 
-        float height;
-        if (hStr < seaLevel) height = 0.0f; // Ocean surface is exactly @ Sea Level (radius)
-        else height = (hStr - seaLevel) / (1.0f - seaLevel) * maxElevation;
+        // Translate normalized height [0,1] to kilometers
+        float heightKm;
+        if (hRefined < seaLevel) {
+            heightKm = 0.0f;
+        } else {
+            heightKm = (hRefined - seaLevel) / (1.0f - seaLevel) * maxElevation;
+            // Apply 10m scale micro-noise physically
+            heightKm += Noise::detail10m(normalizedPos) * planetRadius;
+        }
 
-        // --- KSC FLATTENING ---
-        Vec3 kscPos(0.1436f, 0.478f, 0.866f);
-        float kscDist = (normalizedPos - kscPos).length();
-        float kscMask = smoothstep_local(0.08f, 0.02f, kscDist); 
-        // Flatten KSC to exactly 5 meters above sea level (0.005 km)
-        height = Noise::mix(height, 0.005f, kscMask); 
-
-        return height;
+        // --- KSC FLATTENING REMOVED ---
+        return heightKm;
     }
 
     Vec3 getPosition(const Vec3& normalizedPos) {

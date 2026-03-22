@@ -428,6 +428,7 @@ public:
   GLuint terrainProg = 0;
   GLint ut_mvp = -1, ut_model = -1, ut_camPos = -1, ut_lightDir = -1, ut_viewPos = -1, ut_time = -1;
   GLint ut_nodePos = -1, ut_nodeSide = -1, ut_nodeUp = -1; // For patch warping
+  GLint ut_nodeLevel = -1;      // New: Quadtree subdivision level
   GLint ut_planetCenterRel = -1; // New: Planet center relative to camera
   GLint ut_tectonicMap = -1;    // New: Baked Macro-Skeleton from simulation
   GLint ut_climateMap = -1;     // New: Baked Climate Data (Temp, Precip, Pressure)
@@ -1960,15 +1961,17 @@ public:
       }
 
       bool intersectSphere(vec3 ro, vec3 rd, float radius, out float t0, out float t1) {
+          // Stable geometric intersection to prevent precision loss and catastrophic cancellation
+          // (which causes concentric rings and missing atmosphere at >10,000 km)
           vec3 L = ro - uPlanetCenter;
-          float a = dot(rd, rd);
-          float b = 2.0 * dot(rd, L);
-          float c = dot(L, L) - radius * radius;
-          float delta = b * b - 4.0 * a * c;
-          if (delta < 0.0) return false;
-          float sqrtDelta = sqrt(delta);
-          t0 = (-b - sqrtDelta) / (2.0 * a);
-          t1 = (-b + sqrtDelta) / (2.0 * a);
+          float tca = -dot(L, rd);
+          vec3 perp = L + tca * rd;
+          float d2 = dot(perp, perp);
+          float radius2 = radius * radius;
+          if (d2 > radius2) return false;
+          float thc = sqrt(radius2 - d2);
+          t0 = tca - thc;
+          t1 = tca + thc;
           return true;
       }
 
@@ -1994,6 +1997,10 @@ public:
       // Interleaved Gradient Noise (Jimenez 2014, used in AAA engines)
       // Produces much more uniform spatial distribution than white noise,
       // reducing visible clumping artifacts dramatically.
+      uniform sampler2D uDepthTex;
+      uniform vec2 uResolution;
+      uniform mat4 uInvProj;
+
       uniform int uFrameIndex; // Animated frame counter for temporal variation
       uniform float uCloudTime;
       uniform float uCloudPhaseSin;
@@ -2238,6 +2245,17 @@ R"(
           setupPlanetProfile();
           vec3 rayDir = normalize(vWorldPos - uCamPos);
           
+          // Reconstruct terrain distance from depth buffer
+          vec2 uv = gl_FragCoord.xy / uResolution;
+          float dVal = texture(uDepthTex, uv).r;
+          float terrainDist = 1e6;
+          if (dVal < 1.0) {
+              vec4 clip = vec4(uv * 2.0 - 1.0, dVal * 2.0 - 1.0, 1.0);
+              vec4 viewPos = uInvProj * clip;
+              viewPos /= viewPos.w;
+              terrainDist = length(viewPos.xyz);
+          }
+          
           // Compute camera altitude for adaptive behavior
           float camDist = length(uCamPos - uPlanetCenter);
           float camAlt = max(camDist - uSurfaceRadius, 0.0);
@@ -2247,11 +2265,33 @@ R"(
           float tNear, tFar;
           if (!intersectSphere(uCamPos, rayDir, uOuterRadius, tNear, tFar)) discard;
           
-          // Clamp surface intersection
-          float tSurf0, tSurf1;
-          bool hitSurface = intersectSphere(uCamPos, rayDir, uInnerRadius, tSurf0, tSurf1);
-          if (hitSurface && tSurf0 > 0.0) {
-              tFar = min(tFar, tSurf0);
+          // Occlude atmosphere against physical terrain distance
+          if (dVal < 1.0) {
+              float analyticalSurf = 1e6;
+              float tSurf0, tSurf1;
+              if (intersectSphere(uCamPos, rayDir, uInnerRadius, tSurf0, tSurf1) && tSurf0 > 0.0) {
+                  analyticalSurf = tSurf0;
+              }
+              
+              float diff = abs(terrainDist - analyticalSurf);
+              // Error margin scales with distance because 24-bit depth buffer precision degrades at huge distances
+              float errorMargin = camAlt * 0.05 + 150.0;
+              
+              if (diff < errorMargin) {
+                  // Eliminate Z-fighting and concentric rings by smoothly blending depth into analytical sphere at large distances
+                  // At < 100km, we fully trust depth buffer for crisp mountain occlusion.
+                  // At > 1000km, we fully trust mathematical sphere to prevent precision banding.
+                  float tScale = clamp((camAlt - 100.0) / 1000.0, 0.0, 1.0);
+                  tFar = min(tFar, mix(terrainDist, analyticalSurf, tScale));
+              } else {
+                  tFar = min(tFar, terrainDist); // e.g. looking at a spaceship
+              }
+          } else {
+              // Clamp mathematical surface intersection if looking at space
+              float tSurf0, tSurf1;
+              if (intersectSphere(uCamPos, rayDir, uInnerRadius, tSurf0, tSurf1) && tSurf0 > 0.0) {
+                  tFar = min(tFar, tSurf0);
+              }
           }
           
           // When camera is inside, ray starts from camera position
@@ -2442,13 +2482,11 @@ R"(
       out vec2 vUV;
       
       void main() {
-        vUV = aPos * 0.5 + 0.5; // 0 to 1 UVs
-        // Base quad is -1 to 1. Scale it.
+        vUV = aPos * 0.5 + 0.5;
         vec2 pos = aPos * uScale;
-        // Fix aspect ratio so circles are round
         pos.x /= uAspect;
-        // Apply offset (center of the element)
-        gl_Position = vec4(pos + uOffset, 0.0, 1.0);
+        // Output at the sun's actual screen-space depth to allow occlusion
+        gl_Position = vec4(pos + uOffset, uSunScreenPos.x > -2.0 ? 0.9999 : 0.0, 1.0);
       }
     )";
     const char* lfFragSrc = R"(
@@ -2930,27 +2968,26 @@ R"(
       uniform mat4 uMVP;
       uniform mat4 uModel;
       uniform vec3 uCamPos;
-      uniform vec3 uPlanetCenterRel; // Relative to uCamPos (Camera-Relative Rendering)
+      uniform vec3 uPlanetCenterRel; 
       uniform float uPlanetRadius;
       uniform float uMaxElevation;
       uniform float uTime;
+      uniform int uNodeLevel;
 
-      // Patch Warping Uniforms
       uniform vec3 uNodePos;
       uniform vec3 uNodeSide;
       uniform vec3 uNodeUp;
       
       uniform sampler2D uTectonicMap;
-      uniform sampler2D uHydroMap; // R: FilledHeight (Lake surface), G: Acc, B: Strahler
+      uniform sampler2D uHydroMap; 
 
-      out vec3 vRelViewPos; // Point position relative to camera
+      out vec3 vRelViewPos; 
       out vec3 vNormal;
       out vec2 vUV;
       out vec3 vLocalPos;
       out float vElevation;
       out float vWaterDepth;
 
-      // Noise functions (matching Earth shader for consistency)
       float hash(vec3 p) {
         p = fract(p * vec3(443.897, 441.423, 437.195));
         p += dot(p, p.yzx + 19.19);
@@ -2959,95 +2996,142 @@ R"(
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
         f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-        float n000 = hash(i);    float n100 = hash(i + vec3(1,0,0));
-        float n010 = hash(i + vec3(0,1,0)); float n110 = hash(i + vec3(1,1,0));
-        float n001 = hash(i + vec3(0,0,1)); float n101 = hash(i + vec3(1,0,1));
-        float n011 = hash(i + vec3(0,1,1)); float n111 = hash(i + vec3(1,1,1));
-        return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-                   mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+        return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)), f.x), 
+                       mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+                   mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), 
+                       mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
       }
       float fbm(vec3 p, int oct) {
-        float v = 0.0, amp = 0.5;
-        for (int i = 0; i < oct; i++) {
-          v += noise3d(p) * amp;
-          p = p * 2.15 + vec3(0.131, -0.217, 0.344); 
-          amp *= 0.47;
+        float v = 0.0, a = 0.5;
+        for(int i=0; i<oct; ++i) {
+          v += noise3d(p) * a;
+          p = p * 2.15 + vec3(0.13, -0.21, 0.34);
+          a *= 0.47;
         }
         return v;
       }
-      float warpedFbm(vec3 p) {
-        vec3 q = vec3(fbm(p, 4), fbm(p + vec3(5.2, 1.3, 2.8), 4), fbm(p + vec3(9.1, 4.7, 3.1), 4));
-        return fbm(p + q * 1.8, 10);
+      float ridgedFbm(vec3 p, int oct) {
+        float v = 0.0, a = 0.5, f = 1.05;
+        for(int i=0; i<oct; ++i) {
+          float n = 1.0 - abs(noise3d(p * f) * 2.0 - 1.0);
+          v += n * n * a;
+          f *= 2.07; a *= 0.48;
+        }
+        return v;
+      }
+      float mountainNoise(vec3 p) {
+        vec3 off = vec3(fbm(p*2.0, 3), fbm(p*2.0+5.2, 3), fbm(p*2.0+2.7, 3));
+        return ridgedFbm(p + off * 0.15, 6);
+      }
+      float detail10m(vec3 p) {
+        // High frequency micro-cells (approx 10m scale)
+        float n = noise3d(p * 2500000.0);
+        n += noise3d(p * 5000000.0) * 0.5;
+        return n * 0.0000015; // ~10m on 6000km sphere
+      }
+
+      float sampleTectonic(vec2 uv) {
+          vec2 res = vec2(512.0, 256.0);
+          vec2 st = uv * res - 0.5;
+          vec2 i = floor(st);
+          vec2 f = fract(st);
+          float h00 = texture(uTectonicMap, i/res).r;
+          float h10 = texture(uTectonicMap, (i+vec2(1,0))/res).r;
+          float h01 = texture(uTectonicMap, (i+vec2(0,1))/res).r;
+          float h11 = texture(uTectonicMap, (i+vec2(1,1))/res).r;
+          float base = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+          float tGrad = length(vec2(h10-h00, h01-h00));
+          if (tGrad > 0.05) {
+              float sx = f.x * f.x * (3.0 - 2.0 * f.x);
+              float sy = f.y * f.y * (3.0 - 2.0 * f.y);
+              float sharp = mix(mix(h00, h10, sx), mix(h01, h11, sx), sy);
+              base = mix(base, sharp, 0.45);
+          }
+          return base;
       }
 
       void main() {
-        // 1. Warping flat patch (-0.5 to 0.5) to unit cube face
         vec3 cubePos = uNodePos + aPos.x * uNodeSide + aPos.z * uNodeUp;
         vec3 normPos = normalize(cubePos);
+        float fV_phi = acos(clamp(normPos.y, -1.0, 1.0));
+        float fV_theta = atan(normPos.z, normPos.x);
+        vec2 geoUV = vec2(fV_theta / (2.0 * 3.14159) + 0.5, fV_phi / 3.14159);
         
-        // 2. Fetch base geological elevation
-        float phi = acos(clamp(normPos.y, -1.0, 1.0));
-        float theta = atan(normPos.z, normPos.x);
-        vec2 geoUV = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
-        float plateBase = texture(uTectonicMap, geoUV).r;
-        float noise = warpedFbm(normPos * 6.5);
+        float plateBase = sampleTectonic(geoUV);
+        float hRefined = plateBase;
         
-        // Additive Blending with Noise Scaling
-        float landMask = smoothstep(0.4, 0.6, plateBase);
-        float hStr = plateBase + (noise - 0.5) * (0.12 + 0.06 * landMask);
-        
-        // 3. Hydrology: Geometric lake/river flattening
-        vec4 hydro = texture(uHydroMap, geoUV);
-        float filledH = hydro.r; 
-        float lakeMask = smoothstep(0.0001, 0.01, filledH - hStr);
-        
-        // Soft-flatten ground to lake surface level
-        float originalH = hStr;
-        hStr = mix(hStr, filledH, lakeMask * 0.98); 
-        vWaterDepth = max(0.0, filledH - originalH);
+        float mMask = smoothstep(0.55, 0.75, plateBase);
+        float pMask = 1.0 - smoothstep(0.40, 0.62, plateBase);
+        float cMask = smoothstep(0.435, 0.445, plateBase) * (1.0 - smoothstep(0.455, 0.465, plateBase));
 
-        float seaLevel = 0.44;
-        // Continental Shelf Logic
-        if (hStr < seaLevel && hStr > 0.38) {
-            float shelfT = (hStr - 0.38) / (seaLevel - 0.38);
-            hStr = mix(0.39, seaLevel - 0.002, smoothstep(0.0, 1.0, shelfT));
+        // 1.1 Mountain Folding + Thermal Erosion
+        if (mMask > 0.01) {
+            float epsG = 0.005;
+            float hX = (sampleTectonic(geoUV + vec2(epsG, 0.0)) - sampleTectonic(geoUV - vec2(epsG, 0.0)));
+            float hY = (sampleTectonic(geoUV + vec2(0.0, epsG)) - sampleTectonic(geoUV - vec2(0.0, epsG)));
+            float sAngle = atan(-hX, hY);
+            float ca = cos(sAngle), sa = sin(sAngle);
+            float sU = normPos.x * ca - normPos.z * sa;
+            float sV = normPos.x * sa + normPos.z * ca;
+            vec3 pS = vec3(sU * 0.72, normPos.y, sV * 1.28); 
+            float ridges = mountainNoise(pS * 6.5);
+            hRefined += ridges * 0.18 * mMask;
+            if (hRefined > 0.78) hRefined -= smoothstep(0.78, 0.96, hRefined) * 0.045;
+        }
+
+        // 1.2 Biome Features (Cliffs)
+        float cliffNoise = 1.0 - abs(noise3d(normPos * 180.0) * 1.5 - 0.5);
+        hRefined += smoothstep(0.6, 0.9, cliffNoise) * 0.007 * cMask;
+
+        // 2.1 River Valley Carving (V-to-U shaped)
+        vec4 hydro = texture(uHydroMap, geoUV);
+        float strahler = hydro.b; 
+        if (strahler >= 2.0 && plateBase > 0.445) {
+            float vNoise = noise3d(normPos * 250.0 + noise3d(normPos * 120.0) * 0.004);
+            float depth = 0.015 * (strahler / 7.0);
+            float isLow = 1.0 - smoothstep(0.45, 0.55, plateBase);
+            float profile = mix(abs(vNoise * 2.0 - 1.0), pow(abs(vNoise * 2.0 - 1.0), 0.4), isLow);
+            hRefined -= (1.0 - profile) * depth;
+        }
+
+        float hydroMask = smoothstep(0.0001, 0.01, hydro.r - plateBase);
+        hRefined = mix(hRefined, hydro.r, hydroMask * 0.97);
+
+        float sLevel = 0.44;
+        if (hRefined < sLevel && hRefined > 0.38) {
+            float shelfT = (hRefined - 0.38) / (sLevel - 0.38);
+            hRefined = mix(0.395, sLevel - 0.001, smoothstep(0.0, 1.0, shelfT));
+        }
+
+        float finalH = (hRefined < sLevel) ? 0.0 : (hRefined - sLevel) / (1.0 - sLevel) * uMaxElevation / uPlanetRadius;
+        
+        // 10m Scale detail (Land Only)
+        if (hRefined >= sLevel) {
+            finalH += detail10m(normPos);
         }
         
-        float height;
-        if (hStr < seaLevel) height = 0.0; // Sea Level exactly at uPlanetRadius
-        else height = (hStr - seaLevel) / (1.0 - seaLevel) * uMaxElevation / uPlanetRadius;
-        
-        // --- KSC FLATTENING ---
         vec3 kscPos = vec3(0.1436, 0.478, 0.866);
-        float kscDist = length(normPos - kscPos);
-        float kscMask = smoothstep(0.08, 0.02, kscDist); 
-        // Flatten KSC to 5m altitude (0.005 km)
-        height = mix(height, 0.005 / uPlanetRadius, kscMask); 
+        finalH = mix(finalH, 0.005 / uPlanetRadius, smoothstep(0.08, 0.02, length(normPos - kscPos))); 
         
-        if (hStr < seaLevel) {
-           // Base height is 0.0 for ocean pass
-        }
-        
-        // 4. Compute High-Precision Relative Position
         mat3 localRotScale = mat3(uModel); 
-        vRelViewPos = uPlanetCenterRel + localRotScale * (normPos * (1.0 + height));
-        
-        vElevation = hStr; 
+        vRelViewPos = uPlanetCenterRel + localRotScale * (normPos * (1.0 + finalH));
+        vElevation = hRefined; 
         vNormal = localRotScale * normPos; 
         vUV = aUV;
         vLocalPos = normPos;
-        
+        vWaterDepth = max(0.0, hydro.r - plateBase);
         gl_Position = uMVP * vec4(vRelViewPos, 1.0);
       }
     )";
 
     const char* terrainFragSrc = R"(
       #version 330 core
-      in vec3 vRelViewPos; // Camera-relative world position
+      in vec3 vRelViewPos; 
       in vec3 vNormal;
       in vec2 vUV;
       in vec3 vLocalPos;
       in float vElevation;
+      in float vWaterDepth;
 
       uniform vec3 uLightDir;
       uniform vec3 uCamPos;
@@ -3055,11 +3139,9 @@ R"(
       uniform sampler2D uTectonicMap;
       uniform sampler2D uClimateMap;
       uniform sampler2D uHydroMap;
-      uniform int uViewMode; // 0: Normal, 1: Temperature, 2: Precipitation, 3: Pressure
+      uniform int uViewMode; 
 
       out vec4 FragColor;
-
-      in float vWaterDepth;
 
       float hash(vec3 p) {
         p = fract(p * vec3(443.897, 441.423, 437.195));
@@ -3069,257 +3151,121 @@ R"(
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
         f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-        return mix(mix(mix(hash(i),     hash(i+vec3(1,0,0)), f.x), 
+        return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)), f.x), 
                        mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
                    mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), 
                        mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
-      }
-
-      float fbm(vec3 p) {
-          float v = 0.0, a = 0.5;
-          for (int i = 0; i < 5; i++) {
-              v += a * noise3d(p);
-              p *= 2.0; a *= 0.5;
-          }
-          return v;
-      }
-
-      // Domain Warping for organic shapes
-      float warpedNoise(vec3 p) {
-          vec3 q = vec3(fbm(p + vec3(0.0)), fbm(p + vec3(5.2, 1.3, 0.1)), fbm(p + vec3(2.1, 9.2, 4.4)));
-          return fbm(p + 4.0 * q);
       }
       
       float getMicroHeight(vec3 p, float distFade) {
           float h = noise3d(p * 800.0) * 0.5;
           h += noise3d(p * 8000.0) * 0.15 * clamp(1.0 - distFade * 0.2, 0.0, 1.0);
-          h += noise3d(p * 40000.0) * 0.05 * clamp(1.0 - distFade * 0.5, 0.0, 1.0);
           return h;
+      }
+
+      float warpedNoise(vec3 p) {
+          vec3 q = vec3(noise3d(p + vec3(0.0, 0.0, 0.0)),
+                        noise3d(p + vec3(5.2, 1.3, 0.7)),
+                        noise3d(p + vec3(2.7, 8.4, 3.1)));
+          return noise3d(p + q * 0.5);
       }
 
       void main() {
         vec3 L = normalize(uLightDir);
-        vec3 V = normalize(-vRelViewPos); // Corrected: V is direction from point to camera
+        vec3 V = normalize(-vRelViewPos); 
+        float distToCam = length(vRelViewPos); 
+        float detailFade = distToCam / 1000.0; 
         
-        float distToCam = length(vRelViewPos); // high precision now!
-        float detailFade = distToCam / 1000.0; // convert to km
+        vec3 fV_normPos = normalize(vLocalPos);
+        float fV_phi = acos(clamp(fV_normPos.y, -1.0, 1.0));
+        float fV_theta = atan(fV_normPos.z, fV_normPos.x);
+        vec2 fV_geoUV = vec2(fV_theta / (2.0 * 3.14159) + 0.5, fV_phi / 3.14159);
 
-        // --- INDUSTRIAL GRADE: PARALLAX OCCLUSION MAPPING (POM) ---
-        vec3 pLocal = vLocalPos;
-        float microFade = clamp(1.0 - (detailFade / 2.0), 0.0, 1.0); 
-        if (microFade > 0.01 && vElevation > 0.44) {
-            vec3 N_geom = normalize(vNormal);
-            vec3 T = normalize(cross(N_geom, vec3(0,1,0)));
-            if (abs(N_geom.y) > 0.99) T = normalize(cross(N_geom, vec3(0,0,1)));
-            vec3 B = cross(N_geom, T);
-            mat3 TBN = mat3(T, B, N_geom);
-            vec3 vLocalDir = normalize(V * TBN);
+        // --- Shader Layer: Micro-Details ---
+        float hRefined = vElevation; 
+        float mMask = smoothstep(0.55, 0.75, hRefined);
+        float pMask = 1.0 - smoothstep(0.40, 0.62, hRefined);
+        
+        // --- Normal Calculation with Micro-Perturbation ---
+        vec3 N = normalize(vNormal);
+        if (vWaterDepth < 0.0001 && distToCam < 8.0) {
+            float nScale = 1500.0 * (1.0 + mMask * 2.0); 
+            float nAmp = 0.05 * (1.0 - smoothstep(1.0, 8.0, distToCam));
             
-            float numLayers = mix(8.0, 32.0, abs(dot(vLocalDir, vec3(0,0,1))));
-            float layerDepth = 1.0 / numLayers;
-            float currentLayerDepth = 0.0;
-            vec2 P = vLocalDir.xy * 0.0005;
-            vec2 deltaP = P / numLayers;
+            // 10m level split
+            float d10 = noise3d(vLocalPos * 3000000.0) * 0.4;
             
-            vec2 currentTexCoords = vec2(0.0);
-            float currentDepthMapValue = getMicroHeight(pLocal, detailFade);
+            vec3 pMic = vLocalPos * nScale;
+            float h0 = noise3d(pMic) + d10;
+            float h1 = noise3d(pMic + vec3(0.005, 0, 0)) + d10;
+            float h2 = noise3d(pMic + vec3(0, 0.005, 0)) + d10;
             
-            while(currentLayerDepth < currentDepthMapValue) {
-                currentTexCoords -= deltaP;
-                currentDepthMapValue = getMicroHeight(pLocal + T * currentTexCoords.x + B * currentTexCoords.y, detailFade);
-                currentLayerDepth += layerDepth;
-            }
-            
-            vec2 prevTexCoords = currentTexCoords + deltaP;
-            float afterDepth  = currentDepthMapValue - currentLayerDepth;
-            float beforeDepth = getMicroHeight(pLocal + T * prevTexCoords.x + B * prevTexCoords.y, detailFade) - currentLayerDepth + layerDepth;
-            float weight = afterDepth / (afterDepth - beforeDepth);
-            currentTexCoords = prevTexCoords * weight + currentTexCoords * (1.0 - weight);
-            
-            pLocal += T * currentTexCoords.x + B * currentTexCoords.y;
+            vec3 microN = normalize(vec3(h0 - h1, h0 - h2, 1.0));
+            vec3 TN = normalize(cross(N, vec3(0,1,0)));
+            if (abs(N.y) > 0.99) TN = normalize(cross(N, vec3(0,0,1)));
+            vec3 BN = cross(N, TN);
+            N = normalize(N + (TN * microN.x + BN * microN.y) * nAmp * 2.0);
         }
 
-        // --- KSC FLATTENING & COASTAL GUARANTEE ---
-        // Cape Canaveral: Lat 28.5, Lon -80.5 -> vec3(0.145, -0.867, 0.477)
-        vec3 kscPos = vec3(0.1436, 0.478, 0.866);
-        float kscDist = length(vLocalPos - kscPos);
-        float kscMask = smoothstep(0.08, 0.02, kscDist); // Flatten within strictly defined radius
-        
-        // High-res fragment-side elevation for organic coastline
-        // Lower noise frequency (120.0 -> 18.0) for smoother, planetary-scale coastlines
-        float geoNoise = warpedNoise(vLocalPos * 18.0);
-        float h = mix(vElevation, geoNoise, 0.2); 
-        
-        // Force KSC to be coastal lowland
-        h = mix(h, 0.445, kscMask);
-
-        float seaLevel = 0.44;
-        
+        // --- Colors & Lighting: Silk Smooth Base with Albedo Variation ---
         vec3 deepWater = vec3(0.01, 0.06, 0.15);
         vec3 shallowWater = vec3(0.05, 0.35, 0.45);
         vec3 beach = vec3(0.72, 0.68, 0.52);
         vec3 lowland = vec3(0.12, 0.32, 0.10);
         vec3 forest = vec3(0.06, 0.22, 0.05);
-        vec3 mountain = vec3(0.42, 0.38, 0.35);
+        vec3 mountainColor = vec3(0.42, 0.38, 0.35);
         vec3 snow = vec3(0.92, 0.94, 1.0);
-
+        
         vec3 surfColor;
-        float waterAlpha = 0.0;
+        float sLevel = 0.44;
         
-        if (h < seaLevel || vWaterDepth > 0.0001) {
-            float depth = (h < seaLevel) ? (seaLevel - h) / seaLevel : vWaterDepth * 15.0;
-            surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.45, depth));
-            // Shoreline foam effect
-            float shore = (h < seaLevel) ? smoothstep(0.005, 0.0, seaLevel - h) : smoothstep(0.005, 0.0, vWaterDepth);
-            surfColor = mix(surfColor, vec3(0.8, 0.9, 1.0), shore * 0.4);
-            waterAlpha = 1.0;
+        if (hRefined < sLevel || vWaterDepth > 0.0001) {
+            float depth = (hRefined < sLevel) ? (sLevel - hRefined) : vWaterDepth * 1.5;
+            surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.15, depth));
         } else {
-            float landH = (h - seaLevel) / (1.0 - seaLevel);
-            // Industrial Grade: Soft Biome Blending using smoothstep layers
-            vec3 cLow = mix(beach, lowland, smoothstep(0.0, 0.15, landH));
-            vec3 cMid = mix(cLow, forest, smoothstep(0.15, 0.45, landH));
-            vec3 cHigh = mix(cMid, mountain, smoothstep(0.45, 0.75, landH));
-            surfColor = mix(cHigh, snow, smoothstep(0.75, 0.95, landH));
+            float landH = (hRefined - sLevel) / (1.0 - sLevel);
+            // Albedo Variation (Subtle, no black spots)
+            float albedoVar = noise3d(vLocalPos * 120.0) * 0.1 + 0.95;
             
-            // Break up biomes with organic jitter
-            float jitter = warpedNoise(vLocalPos * 50.0);
-            surfColor = mix(surfColor, surfColor * (0.8 + 0.4 * jitter), 0.2);
+            vec3 cMid = mix(beach, lowland, smoothstep(0.0, 0.1, landH));
+            cMid = mix(cMid, forest, smoothstep(0.1, 0.45, landH));
+            cMid = mix(cMid, mountainColor, smoothstep(0.45, 0.8, landH));
+            surfColor = mix(cMid, snow, smoothstep(0.8, 0.95, landH)) * albedoVar;
         }
-        
-        // Detailed micro-noise integration (filtered for anti-aliasing)
-        float detailH = getMicroHeight(pLocal, detailFade);
-        surfColor *= (0.92 + 0.16 * detailH);
 
-        // --- INDUSTRIAL GRADE: PROCEDURAL NORMAL DERIVATIVES ---
-        vec3 N = normalize(vNormal);
-        if (waterAlpha < 0.5) {
-            // Finite difference for normals
-            float eps = 0.0001;
-            vec3 T = normalize(cross(N, vec3(0,1,0)));
-            if (abs(N.y) > 0.99) T = normalize(cross(N, vec3(0,0,1)));
-            vec3 B = cross(N, T);
-            
-            float hCenter = getMicroHeight(pLocal, detailFade);
-            float hRight  = getMicroHeight(pLocal + T * eps, detailFade);
-            float hUp     = getMicroHeight(pLocal + B * eps, detailFade);
-            
-            vec3 grad = vec3((hRight - hCenter)/eps, (hUp - hCenter)/eps, 0.0);
-            vec3 pertN = normalize(vec3(-grad.x, -grad.y, 1.0));
-            N = normalize(T * pertN.x + B * pertN.y + N * pertN.z);
-            
-            // Micro-AO based on height (gentle contrast only)
-            surfColor *= mix(0.92, 1.0, smoothstep(0.0, 0.6, hCenter));
-        } else {
-            // Water ripples
-            float ripple = noise3d(pLocal * 1500.0 + vec3(uTime * 0.1));
-            N = normalize(N + (vec3(ripple) - 0.5) * 0.04);
-        }
-        
         float diff = max(dot(N, L), 0.0);
-        float spec = 0.0;
-        if (waterAlpha > 0.5 && diff > 0.0) {
-            vec3 H = normalize(L + V);
-            spec = pow(max(dot(N, H), 0.0), 64.0) * 0.8;
-        }
-
-        float ambient = 0.12; // Higher ambient for better visibility in shadows
-        vec3 result = surfColor * (ambient + diff * (1.0 - ambient)) + vec3(spec);
+        float ambient = 0.18; 
+        vec3 result = surfColor * (ambient + diff * (1.1 - ambient));
         
-        // --- CLIMATE VISUALIZATION OVERLAY ---
         if (uViewMode > 0) {
-            float phi = acos(clamp(vLocalPos.y / length(vLocalPos), -1.0, 1.0));
-            float theta = atan(vLocalPos.z, vLocalPos.x);
-            vec2 climUV = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
-            vec4 climate = texture(uClimateMap, climUV);
-            
+            vec4 climate = texture(uClimateMap, fV_geoUV);
             vec3 vColor = vec3(0.0);
             if (uViewMode == 1) {
-                // Temperature: Red (Hot) to Blue (Cold)
-                float t = (climate.r + 30.0) / 70.0; // Scaled -30 to 40
-                vColor = mix(vec3(0,0,1), vec3(0,1,0), smoothstep(0.0, 0.45, t));
-                vColor = mix(vColor, vec3(1,0,0), smoothstep(0.45, 1.0, t));
+                float t = (climate.r + 30.0) / 70.0;
+                vColor = mix(vec3(0,0,1), vec3(1,0,0), smoothstep(0.0, 1.0, t));
             } else if (uViewMode == 2) {
-                // Precipitation: Blue intensity
-                float p = climate.g / 3000.0; // Scaled to 3000mm
-                vColor = mix(vec3(0.9, 0.9, 0.7), vec3(0.1, 0.4, 0.9), smoothstep(0.0, 0.3, p));
-                vColor = mix(vColor, vec3(0.0, 0.1, 0.4), smoothstep(0.3, 1.0, p));
-            } else if (uViewMode == 3) {
-                // Pressure: Red (High) to Blue (Low)
-                float press = (climate.b - 990.0) / 45.0; // 990 to 1035
-                vColor = mix(vec3(0,0,1), vec3(1,1,1), smoothstep(0.0, 0.5, press));
-                vColor = mix(vColor, vec3(1,0,0), smoothstep(0.5, 1.0, press));
+                float p = climate.g / 3000.0;
+                vColor = mix(vec3(0.9, 0.9, 0.8), vec3(0.1, 0.4, 0.9), smoothstep(0.0, 1.0, p));
             } else if (uViewMode == 4) {
-                // Hydrology: River network (Strahler Hierarchy) + Lakes
-                vec4 hydroData = texture(uHydroMap, climUV);
-                float strahler = hydroData.b;
-                
-                // Background
-                vColor = vec3(0.9, 0.85, 0.75);
-                
-                if (strahler >= 1.0) {
-                    vColor = mix(vec3(0.4, 0.7, 1.0), vec3(0.0, 0.15, 0.6), smoothstep(1.0, 7.0, strahler));
-                }
-                if (vWaterDepth > 0.0001) vColor = vec3(0.0, 0.3, 0.9); // Highlight lakes
+                vec4 hydroData = texture(uHydroMap, fV_geoUV);
+                vColor = mix(vec3(0.9, 0.8, 0.7), vec3(0.0, 0.4, 0.9), smoothstep(1.0, 7.0, hydroData.b));
+                if (vWaterDepth > 0.0001) vColor = vec3(0.0, 0.5, 1.0);
             }
-            
-            // Apply simple shading to the map
-            float light = 0.5 + 0.5 * max(dot(N, L), 0.0);
-            FragColor = vec4(vColor * light, 1.0);
+            FragColor = vec4(vColor * (0.6 + 0.4 * diff), 1.0);
             return;
         }
 
-        // --- RIVER OVERLAY FOR NORMAL RENDERING ---
+        // --- River Overlay ---
         {
-            float phi = acos(clamp(vLocalPos.y / length(vLocalPos), -1.0, 1.0));
-            float theta = atan(vLocalPos.z, vLocalPos.x);
-            vec2 climUV = vec2(theta / (2.0 * 3.14159) + 0.5, phi / 3.14159);
-            
-            float organicJitter = warpedNoise(vLocalPos * 12.0) * 0.003;
-            vec2 searchUV = climUV + vec2(organicJitter);
-            
-            vec4 hydroData = texture(uHydroMap, searchUV);
-            float strahler = hydroData.b;
-            
-            if (strahler >= 3.0 && vElevation > 0.445) {
-                float spine = warpedNoise(vLocalPos * 150.0 + organicJitter * 20.0);
-                float widthThreshold = 0.52 - (strahler - 3.0) * 0.04;
-                float riverMask = smoothstep(widthThreshold + 0.05, widthThreshold, spine);
-                
-                if (riverMask > 0.01) {
-                    vec3 riverColor = mix(vec3(0.05, 0.35, 0.75), vec3(0.0, 0.05, 0.25), smoothstep(3.0, 7.0, strahler));
-                    result = mix(result, riverColor, riverMask * 0.85);
-                }
+            vec4 hydroData = texture(uHydroMap, fV_geoUV);
+            if (hydroData.b >= 4.0 && hRefined > sLevel) {
+                result = mix(result, vec3(0.0, 0.1, 0.35), 0.6);
             }
         }
-
-        // --- NIGHT SIDE CITY LIGHTS ---
-        if (uViewMode == 0) {
-            float nightFade = smoothstep(0.15, -0.15, dot(N, L));
-            if (nightFade > 0.001) {
-                float city1 = noise3d(vLocalPos * 15.0);
-                float city2 = noise3d(vLocalPos * 35.0 + vec3(7.7));
-                float habitability = smoothstep(0.44, 0.48, vElevation) * smoothstep(0.6, 0.4, vElevation);
-                float cityBrightness = 0.0;
-                if (city1 > 0.58) cityBrightness += (city1 - 0.58) * 5.0;
-                if (city2 > 0.65) cityBrightness += (city2 - 0.65) * 2.0;
-                
-                // Micro city lights (individual windows/lamps visible when extremely close)
-                float microLights = noise3d(vLocalPos * 150000.0) * noise3d(vLocalPos * 80000.0);
-                float mlFade = clamp(1.0 - (distToCam / 0.5), 0.0, 1.0); // Only within 500m
-                if (microLights > 0.45) cityBrightness += (microLights - 0.45) * 15.0 * mlFade;
-
-                cityBrightness *= habitability * nightFade;
-                vec3 cityColor = mix(vec3(1.0, 0.7, 0.2), vec3(1.0, 0.9, 0.6), city2);
-                result += cityColor * min(cityBrightness, 1.5) * 0.9;
-            }
-        }
-
-        // Atmospheric haze simulation (very crude, based on distance/elevation)
-        float haze = clamp((distToCam - 2.0) / 100.0, 0.0, 0.15); 
-        result = mix(result, vec3(0.5, 0.7, 1.0), haze);
 
         FragColor = vec4(result, 1.0);
       }
+
     )";
 
     terrainProg = compileProgram(terrainVertSrc, terrainFragSrc);
@@ -3337,6 +3283,7 @@ R"(
     ut_climateMap = glGetUniformLocation(terrainProg, "uClimateMap");
     ut_hydroMap = glGetUniformLocation(terrainProg, "uHydroMap");
     ut_viewMode = glGetUniformLocation(terrainProg, "uViewMode");
+    ut_nodeLevel = glGetUniformLocation(terrainProg, "uNodeLevel");
 
     // --- Vegetation Shader (Instanced) ---
     const char* vegVertSrc = R"(
@@ -3721,7 +3668,9 @@ R"(
      glEnable(GL_BLEND);
      glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blending for light
      glDepthMask(GL_FALSE);
-     glDisable(GL_DEPTH_TEST);
+     // Enable depth test so mountains/terrain occlude the sun flare
+     glEnable(GL_DEPTH_TEST);
+     glDepthFunc(GL_LEQUAL);
      glDisable(GL_CULL_FACE);
 
      glBindVertexArray(lfVAO);
@@ -3841,6 +3790,7 @@ R"(
           glUniform3f(ut_nodePos, node->center.x, node->center.y, node->center.z);
           glUniform3f(ut_nodeSide, node->sideA.x, node->sideA.y, node->sideA.z);
           glUniform3f(ut_nodeUp, node->sideB.x, node->sideB.y, node->sideB.z);
+          glUniform1i(ut_nodeLevel, node->level);
           sharedPatchMesh.draw();
       } else {
           for (int i = 0; i < 4; i++) {
@@ -4248,18 +4198,30 @@ R"(
     // Pass cloud toggle
     glUniform1f(glGetUniformLocation(atmoProg, "uShowClouds"), showClouds ? 1.0f : 0.0f);
 
+    // Bind Depth Texture for Physical Terrain Occlusion
+    GLint u_res = glGetUniformLocation(atmoProg, "uResolution");
+    glUniform2f(u_res, (float)taaWidth, (float)taaHeight);
+    GLint u_invProj = glGetUniformLocation(atmoProg, "uInvProj");
+    sendMat4(u_invProj, proj.inverse());
+    glActiveTexture(GL_TEXTURE7);
+    glBindTexture(GL_TEXTURE_2D, taaDepthTex);
+    glUniform1i(glGetUniformLocation(atmoProg, "uDepthTex"), 7);
+
     // --- Graphics State for Volumetric Shell ---
-    // Depth test OFF: raymarching handles planet occlusion mathematically.
-    // Face culling DISABLED: ensures fragments are generated when camera is
-    // inside the atmosphere shell (near clip plane can clip back faces).
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     
+    // Front face culling guarantees we draw exactly ONE layer of the bounding sphere per pixel, 
+    // eliminating double-drawing artifacts, and it never gets clipped by the near plane.
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+    
     sphereMesh.draw();
 
     // Revert ALL state
+    glCullFace(GL_BACK);
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);

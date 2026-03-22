@@ -1118,7 +1118,8 @@ int main() {
         
         static bool terrain_adjusted = false;
         if (rocket_state.status == PRE_LAUNCH && !terrain_adjusted) {
-            double new_R = EARTH_RADIUS + rocket_state.terrain_altitude;
+            double platform_height = 8.5; // Thickness of the visual launch platform
+            double new_R = EARTH_RADIUS + rocket_state.terrain_altitude - rocket_config.bounds_bottom + platform_height;
             rocket_state.surf_px = localUp.x * new_R;
             rocket_state.surf_py = localUp.y * new_R;
             rocket_state.surf_pz = localUp.z * new_R;
