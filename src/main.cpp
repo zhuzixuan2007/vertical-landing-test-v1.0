@@ -1586,8 +1586,10 @@ int main() {
       float rh = (float)rocket_config.height * (float)ws_d * rocket_vis_scale;
       float rw_3d = (float)rocket_config.diameter * (float)ws_d * 0.5f * rocket_vis_scale;
 
-      // 火箭渲染锚点（将火箭向上偏移，解决2D物理质心带来的穿模问题）
-      Vec3 renderRocketPos = renderRocketBase + rocketUp * (rh * 0.425f);
+      // 火箭渲染锚点 (在地面时向上偏移防止穿模，在飞行时使用质心作为渲染中心解决 Orbit 视角旋转偏心问题)
+      Vec3 renderRocketPos = (rocket_state.status == PRE_LAUNCH || rocket_state.status == LANDED) 
+                             ? (renderRocketBase + rocketUp * (rh * 0.425f)) 
+                             : renderRocketBase;
 
       // 相机设置
       int ww, wh;

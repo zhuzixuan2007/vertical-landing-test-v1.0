@@ -5,8 +5,13 @@
 #include <string>
 #include <iostream>
 #include <map>
+#include <unordered_map>
 #include <algorithm>
+#include <fstream>
 #include "core/rocket_state.h"
+
+
+#include "stb_truetype.h"
 
 #ifndef PI
 #define PI 3.14159265358979323846f
@@ -76,8 +81,11 @@ private:
   struct GlyphInfo {
       float u1, v1, u2, v2;
       int w, h;
+      float xoff, yoff, xadvance;
   };
   std::map<unsigned int, GlyphInfo> glyphCache;
+  unsigned char* fontBuffer = nullptr;
+  stbtt_fontinfo fontInfo;
 
   unsigned int compileShader(unsigned int type, const char *source) {
     unsigned int id = glCreateShader(type);
@@ -87,6 +95,7 @@ private:
   }
 
 public:
+  enum Align { LEFT, CENTER, RIGHT };
   void beginFrame() { vertices.clear(); }
   Renderer() {
     unsigned int v = compileShader(GL_VERTEX_SHADER, vertexShaderSource2D);
@@ -481,8 +490,7 @@ public:
             }
         } else if (std::string(type) == "MNV") { // Maneuver: Blue "Star" / Cross
             ms *= 1.1f;
-            drawText(mx, my, "+", ms * 1.5f, r, g, b, alpha, true, Renderer::CENTER);
-            addCircleOutline(mx, my, ms * 0.5f, lw, r, g, b, alpha);
+            drawText(mx, my, "+", ms * 1.5f, r, g, b, alpha, true, CENTER);
         }
     };
 
@@ -490,384 +498,128 @@ public:
     drawMarker(vPrograde * -1.0f, "RET", 0.8f, 0.8f, 0.1f);
     drawMarker(vNormal, "NRM", 0.7f, 0.2f, 0.8f);
     drawMarker(vNormal * -1.0f, "ANT", 0.7f, 0.2f, 0.8f);
-    // Deep blue for radial markers: R=0.1, G=0.2, B=0.9
     drawMarker(vRadial, "R-I", 0.1f, 0.2f, 0.9f);
     drawMarker(vRadial * -1.0f, "R-O", 0.1f, 0.2f, 0.9f);
-    
-    // Maneuver target
-    if (vManeuver.length() > 0.1f) {
-        drawMarker(vManeuver, "MNV", 0.2f, 0.6f, 1.0f);
-    }
-  }
-
-private:
-  uint64_t getGlyph5x7(char c) const {
-      if (c >= 'a' && c <= 'z') c -= 32;
-      switch (c) {
-        case '0': return 0x1C22262A32221CULL; case '1': return 0x080C080808081CULL;
-        case '2': return 0x1C22020C10203EULL; case '3': return 0x1C22020C02221CULL;
-        case '4': return 0x040C14243E0404ULL; case '5': return 0x3E203C0202221CULL;
-        case '6': return 0x1C22203C22221CULL; case '7': return 0x3E020408101010ULL;
-        case '8': return 0x1C22221C22221CULL; case '9': return 0x1C22221E02221CULL;
-        case 'A': return 0x1C22223E222222ULL; case 'B': return 0x3C22223C22223CULL;
-        case 'C': return 0x1C22202020221CULL; case 'D': return 0x3C22222222223CULL;
-        case 'E': return 0x3E20203C20203EULL; case 'F': return 0x3E20203C202020ULL;
-        case 'G': return 0x1C22202E22221CULL; case 'H': return 0x2222223E222222ULL;
-        case 'I': return 0x1C08080808081CULL; case 'J': return 0x0E040404042418ULL;
-        case 'K': return 0x22242830282422ULL; case 'L': return 0x2020202020203EULL;
-        case 'M': return 0x22362A22222222ULL; case 'N': return 0x22322A26222222ULL;
-        case 'O': return 0x1C22222222221CULL; case 'P': return 0x3C22223C202020ULL;
-        case 'Q': return 0x1C2222222A241AULL; case 'R': return 0x3C22223C282422ULL;
-        case 'S': return 0x1C22100C02221CULL; case 'T': return 0x3E080808080808ULL;
-        case 'U': return 0x2222222222221CULL; case 'V': return 0x22222222221408ULL;
-        case 'W': return 0x2222222A2A3622ULL; case 'X': return 0x22221408142222ULL;
-        case 'Y': return 0x22222214080808ULL; case 'Z': return 0x3E02040810203EULL;
-        case '.': return 0x00000000000008ULL; case ':': return 0x00080000000800ULL;
-        case '-': return 0x0000001C000000ULL; case '/': return 0x02040810204000ULL;
-        case '%': return 0x22040810222412ULL; case '(': return 0x04080808080804ULL;
-        case ')': return 0x08040404040408ULL; case '+': return 0x0008083E080800ULL;
-        case '[': return 0x1E10101010101EULL; case ']': return 0x1E02020202021EULL;
-        case '<': return 0x04081020100804ULL; case '>': return 0x10080402040810ULL;
-        case ' ': return 0x0ULL;
-        default: return 0;
-      }
-  }
-
-  const uint16_t* getGlyph16x16(unsigned int unicode) const {
-      static const uint16_t g_u8BBE[] = {0x0080,0x2084,0x1084,0x10F4,0x1084,0x1084,0xFFC4,0x10A4,0x1094,0x108C,0x1284,0x1480,0x08A0,0x0990,0x068E,0x0000};
-      static const uint16_t g_u7F6E[] = {0x7FFE,0x4002,0x4002,0x7FFE,0x0100,0x0100,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0xFFFF};
-      static const uint16_t g_u8BED[] = {0x0080,0x21FC,0x1084,0x1084,0x11FC,0x1084,0x1084,0xF1FC,0x0000,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u8A00[] = {0x0100,0x0100,0x7FFE,0x0000,0x3FC0,0x0000,0x3FC0,0x0000,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u7EE7[] = {0x1040,0x1040,0x21FC,0x2144,0x4944,0x4944,0x1144,0x1144,0x2244,0x2254,0x444A,0x4441,0x1140,0x1140,0x0040,0x0040};
-      static const uint16_t g_u7EED[] = {0x1080,0x1080,0x25FC,0x2484,0x4484,0x4484,0x1484,0x1484,0x2484,0x2484,0x4484,0x4484,0x1484,0x1484,0x0100,0x0100};
-      static const uint16_t g_u65B0[] = {0x0440,0x0444,0x3FE4,0x0444,0x2444,0x2444,0x24FC,0x2444,0x2444,0x2444,0x2FD4,0x0424,0x0440,0x0440,0x0400,0x0000};
-      static const uint16_t g_u6E38[] = {0x1080,0x10BE,0x24A2,0x24A2,0xE4A2,0x24A2,0x24BE,0x27A2,0x24A2,0x24A2,0x24A2,0x24A2,0x24AA,0x2492,0x2002,0x0000};
-      static const uint16_t g_u620F[] = {0x0440,0x2440,0x2440,0x2440,0x24FE,0x2440,0x2440,0x2440,0x2442,0x2442,0x2444,0x2448,0x2450,0x2420,0x2410,0x0000};
-      static const uint16_t g_u9000[] = {0x0080,0x0080,0x0080,0x3FFE,0x0080,0x0080,0x0080,0x0080,0x0080,0x4000,0x2000,0x1000,0x0800,0x0400,0x03FF,0x0000};
-      static const uint16_t g_u51FA[] = {0x0100,0x0100,0x1110,0x1110,0x1110,0x1110,0x7F7E,0x0100,0x0100,0x1110,0x1110,0x1110,0x1110,0x7F7E,0x0100,0x0100};
-      static const uint16_t g_u8FD4[] = {0x0100,0x0100,0x3F80,0x0100,0x0540,0x0920,0x1110,0x2108,0x4104,0x0102,0x01FE,0x0100,0x0100,0x0100,0x0100,0x0100};
-      static const uint16_t g_u56DE[] = {0x0000,0x7FFE,0x4002,0x4002,0x47F2,0x4412,0x4412,0x4412,0x4412,0x4412,0x47F2,0x4002,0x4002,0x7FFE,0x0000,0x0000};
-      static const uint16_t g_u786E[] = {0x1040,0x1040,0x21FC,0x2104,0x45FC,0x4504,0x15FC,0x1504,0x25FC,0x2504,0x45FC,0x1100,0x1104,0x110A,0x11F1,0x0000};
-      static const uint16_t g_u8BA4[] = {0x0080,0x2080,0x1080,0x1080,0x11FC,0x1080,0x1080,0xF080,0x0080,0x0080,0x0100,0x0100,0x0200,0x0400,0x0800,0x1000};
-      static const uint16_t g_u4E2D[] = {0x0100,0x0100,0x0100,0x7F7E,0x4102,0x4102,0x4102,0x7F7E,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100};
-      static const uint16_t g_u6587[] = {0x0100,0x0100,0x7FFE,0x0000,0x0100,0x0100,0x0280,0x0280,0x0440,0x0440,0x0820,0x0820,0x1010,0x2018,0x400E,0x0000};
-      static const uint16_t g_u82F1[] = {0x0000,0x0100,0x4104,0x4104,0x7FFE,0x0100,0x0100,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108};
-      static const uint16_t g_u8D44[] = {0x2110,0x2110,0x2110,0x4928,0x4928,0x1144,0x1144,0x1144,0x2110,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8};
-      static const uint16_t g_u6E90[] = {0x1080,0x10BE,0x24A2,0x24A2,0xE4A2,0x24A2,0x24BE,0x2000,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8,0x0000};
-      static const uint16_t g_u5929[] = {0x7FFE,0x0000,0x0100,0x0100,0x3FF8,0x0100,0x0100,0x0280,0x0280,0x0440,0x0440,0x0820,0x1010,0x2008,0x4004,0x0000};
-      static const uint16_t g_u77FF[] = {0x0080,0x1080,0x1080,0x1FFC,0x1080,0x1090,0x10A0,0x10C0,0x1180,0x1100,0x1200,0x1400,0x1000,0x1000,0x0000,0x0000};
-      static const uint16_t g_u673A[] = {0x0810,0x0810,0x0810,0x7E10,0x0810,0x0810,0x0810,0x0810,0x0810,0x0BA0,0x1840,0x2820,0x4810,0x0810,0x0810,0x0810};
-      static const uint16_t g_u91D1[] = {0x0100,0x0280,0x0440,0x0820,0x1010,0x3FE8,0x0100,0x7FFE,0x0100,0x0100,0x3BC8,0x0440,0x0820,0xFFFF,0x0000,0x0000};
-      static const uint16_t g_u544A[] = {0x0100,0x0100,0x3FF8,0x0100,0x0100,0x7FFE,0x0000,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8,0x0000};
-      static const uint16_t g_u8B66[] = {0x1440,0x24C0,0x1F40,0x14A0,0x2440,0x1F40,0x0100,0x3BC8,0x0440,0x11FC,0x1084,0x1084,0xF084,0x0000,0x0100,0x0000};
-      static const uint16_t g_u7194[] = {0x2008,0x27FC,0x2008,0x2008,0x23F8,0xAB08,0x6330,0x2320,0x2210,0xA338,0x6308,0x23F8,0x2208,0x2208,0x23F8,0x0000};
-      static const uint16_t g_u7089[] = {0x2000,0x23F8,0x2210,0x2210,0x23F8,0xA310,0x67F0,0x2110,0x2110,0xA110,0x6110,0x2110,0x2110,0x21F0,0x2000,0x0000};
-      static const uint16_t g_u88C5[] = {0x0100,0x1108,0x1104,0x1102,0x7FF1,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u914D[] = {0x7FFE,0x4002,0x47F2,0x4412,0x4412,0x4412,0x47F2,0x4002,0x7FFE,0x0100,0x3FF8,0x2108,0x2108,0x2108,0x3FF8,0x0000};
-      static const uint16_t g_u4ED3[] = {0x0100,0x0280,0x0440,0x0820,0x1010,0x7FFE,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2108,0x2208,0x3C08,0x0000};
-      static const uint16_t g_u5E93[] = {0x0100,0x0080,0x7FFE,0x4000,0x4100,0x4100,0x4FFC,0x4104,0x4104,0x4104,0x4FFC,0x4104,0x4104,0x4104,0x401C,0x0000};
-      static const uint16_t g_u5DE5[] = {0x7FFE,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0xFFFF};
-      static const uint16_t g_u5382[] = {0x7FFE,0x4000,0x4000,0x4000,0x4000,0x2000,0x2000,0x1000,0x1000,0x0800,0x0800,0x0400,0x0400,0x0200,0x0100,0x0000};
-      static const uint16_t g_u6982[] = {0x0800,0x0804,0x7E04,0x0804,0x0844,0x0844,0x0924,0x0A14,0x0C0C,0x1800,0x2FFE,0x4100,0x8100,0x0100,0x0100,0x0100};
-      static const uint16_t g_u89C2[] = {0x0002,0x2002,0x1002,0x1202,0x1102,0x1082,0xFD7E,0x1000,0x1080,0x1040,0x1030,0x100C,0x1003,0x13E0,0xE000,0x0000};
-      static const uint16_t g_u72B6[] = {0x1040,0x1040,0x11FC,0x1100,0x2120,0x2120,0x4110,0x1108,0x1204,0x1404,0x1810,0x1060,0x0000,0x0000,0x0000,0x0000};
-      static const uint16_t g_u6001[] = {0x0000,0x3F00,0x2100,0x2100,0x2100,0x2100,0x3F00,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0000};
-      static const uint16_t g_u5728[] = {0x0100,0x0100,0x7FFE,0x0100,0x0100,0x0200,0x0200,0x0400,0x07FE,0x0402,0x0402,0x0402,0x07FE,0x0400,0x0400,0xFFFF};
-      static const uint16_t g_u7EBF[] = {0x1040,0x1040,0x21FC,0x2104,0x45FC,0x4504,0x15FC,0x1504,0x25FC,0x2504,0x45FC,0x1100,0x1104,0x110A,0x11F1,0x0000};
-      static const uint16_t g_u79BB[] = {0x0100,0x7FFE,0x0000,0x3FF8,0x2008,0x3FF8,0x2008,0x3FF8,0x0000,0x0100,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x3FF8};
-      static const uint16_t g_u94F1[] = {0x0080,0x2080,0x1080,0x1080,0x11FC,0x1080,0x1080,0xF080,0x0080,0x0080,0x0100,0x0100,0x0200,0x0400,0x0800,0x1000};
-      static const uint16_t g_u7194_2[] = {0x2008,0x27FC,0x2008,0x2008,0x23F8,0xAB08,0x6330,0x2320,0x2210,0xA338,0x6308,0x23F8,0x2208,0x2208,0x23F8,0x0000};
-      static const uint16_t g_u88C5_2[] = {0x0100,0x1108,0x1104,0x1102,0x7FF1,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u8D44_2[] = {0x2110,0x2110,0x2110,0x4928,0x4928,0x1144,0x1144,0x1144,0x2110,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8};
-      static const uint16_t g_u96F6[] = {0x3FF8,0x2008,0x2008,0x3FF8,0x0100,0x7FFE,0x0100,0x0100,0x3FF8,0x0100,0x0100,0x0280,0x0440,0x0820,0x1010,0x0000};
-      static const uint16_t g_u4EF6[] = {0x0800,0x1800,0x18FE,0x2880,0x4880,0x0880,0x08FE,0x0880,0x0880,0x0880,0x08FE,0x0880,0x0880,0x0880,0x0880,0x0000};
-      static const uint16_t g_u6CA1[] = {0x1000,0x10BE,0x24A2,0x24A2,0xE4A2,0x24A2,0x24BE,0x2000,0x3FF8,0x2108,0x3FF8,0x2108,0x3FF8,0x2108,0x3FF8,0x0000};
-      static const uint16_t g_u6709[] = {0x0100,0x0100,0x7FFE,0x0100,0x0100,0x0200,0x0200,0x0400,0x07FE,0x0402,0x0402,0x0402,0x07FE,0x0400,0x0400,0xFFFF};
-      static const uint16_t g_u7269[] = {0x0820,0x0820,0x7E20,0x0820,0x0820,0x0BF8,0x1A28,0x2A28,0x4BF8,0x0A28,0x0A28,0x0BF8,0x0A28,0x0A28,0x0A28,0x0000};
-      static const uint16_t g_u4EA7[] = {0x0100,0x0080,0x7FFE,0x4000,0x4100,0x4100,0x4FFC,0x4104,0x4104,0x4104,0x4FFC,0x4104,0x4104,0x4104,0x401C,0x0000};
-      static const uint16_t g_u7EC4[] = {0x1040,0x1040,0x21FC,0x2144,0x4944,0x4944,0x1144,0x1144,0x2244,0x2254,0x444A,0x4441,0x1140,0x1140,0x0040,0x0040};
-      static const uint16_t g_u8F66[] = {0x0100,0x0100,0x7FFE,0x0810,0x0810,0x3FF8,0x0810,0x0810,0x0810,0x0810,0x3FF8,0x0810,0x0810,0x0810,0x0810,0x0000};
-      static const uint16_t g_u95F4[] = {0x7FFE,0x4002,0x4002,0x4002,0x47F2,0x4412,0x4412,0x4412,0x4412,0x4412,0x47F2,0x4002,0x4002,0x7FFE,0x0000,0x0000};
-      static const uint16_t g_u53D1[] = {0x0080,0x2080,0x1080,0x1080,0x11FC,0x1080,0x1080,0xF080,0x0080,0x0080,0x0100,0x0100,0x0200,0x0400,0x0800,0x1000};
-      static const uint16_t g_u5C04[] = {0x1040,0x1040,0x21FC,0x2104,0x45FC,0x4504,0x15FC,0x1504,0x25FC,0x2504,0x45FC,0x1100,0x1104,0x110A,0x11F1,0x0000};
-      static const uint16_t g_u573A[] = {0x0100,0x0100,0x7FFE,0x0100,0x0100,0x0200,0x0200,0x0400,0x07FE,0x0402,0x0402,0x0402,0x07FE,0x0400,0x0400,0xFFFF};
-      static const uint16_t g_u8FDB[] = {0x0100,0x0100,0x3F80,0x0100,0x0540,0x0920,0x1110,0x2108,0x4104,0x0102,0x01FE,0x0100,0x0100,0x0100,0x0100,0x0100};
-      static const uint16_t g_u5165[] = {0x0100,0x0100,0x0100,0x0280,0x0280,0x0440,0x0440,0x0820,0x0820,0x1010,0x1010,0x2008,0x2008,0x4004,0x4004,0x0000};
-      static const uint16_t g_u6A21[] = {0x0800,0x0800,0x7F00,0x0820,0x0820,0x0BF8,0x1A28,0x2A28,0x4BF8,0x0A28,0x0A28,0x0BF8,0x0A28,0x0A28,0x0A28,0x0000};
-      static const uint16_t g_u5F0F[] = {0x0100,0x0100,0x7FFE,0x0100,0x0100,0x3FF8,0x0100,0x0100,0x0280,0x0440,0x0820,0x1010,0x2008,0x4004,0x0000,0x0000};
-      static const uint16_t g_u4E3B[] = {0x0100,0x7FFE,0x0100,0x0100,0x3FF8,0x0100,0x0100,0x1010,0x1010,0x1010,0x7FFE,0x1010,0x1010,0x1010,0x1010,0x0000};
-      static const uint16_t g_u83DC[] = {0x0000,0x7FFE,0x0000,0x0100,0x0100,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x3FF8,0x2108,0x2108,0x7FFE,0x0000};
-      static const uint16_t g_u5355[] = {0x0100,0x0100,0x7FFE,0x0000,0x3FC0,0x0000,0x3FC0,0x0000,0x0100,0x3FF8,0x2008,0x2008,0x3FF8,0x2008,0x2008,0x3FF8};
-      static const uint16_t g_u822A[] = {0x0800,0x0800,0x7F00,0x0820,0x0820,0x0BF8,0x1A28,0x2A28,0x4BF8,0x0A28,0x0A28,0x0BF8,0x0A28,0x0A28,0x0A28,0x0000};
-      static const uint16_t g_u5C40[] = {0x7FFE,0x4002,0x4002,0x47F2,0x4412,0x4412,0x4412,0x4412,0x4412,0x47F2,0x4002,0x4002,0x7FFE,0x0000,0x0000,0x0000};
-
-      static const uint16_t g_u5C06[] = {0x0110,0x2110,0x1110,0x11FC,0x1110,0x3910,0x5510,0x911C,0x1110,0x1110,0x11FE,0x1110,0x1110,0x1110,0x1110,0x0000};
-      static const uint16_t g_u5220[] = {0x0000,0x3FF0,0x2210,0x2210,0x2212,0x2212,0x2212,0x2212,0x2212,0x2212,0x2212,0x2210,0x2210,0x3FF0,0x0000,0x0000};
-      static const uint16_t g_u9664[] = {0x0280,0x2280,0x12FE,0x1280,0x1284,0xF282,0x02BC,0x4290,0x2290,0x13F0,0x2210,0x4210,0x0210,0x0210,0x0210,0x0000};
-      static const uint16_t g_u5B58[] = {0x0100,0x0100,0x7FFE,0x0100,0x0200,0x0400,0x0810,0x1FFC,0x0110,0x0110,0x0110,0x0110,0x0110,0x0110,0x0050,0x0020};
-      static const uint16_t g_u6863[] = {0x0810,0x0810,0x08FE,0x7E10,0x0810,0x0810,0x0BA0,0x1840,0x2820,0x4810,0x0E10,0x11FC,0x1004,0x1004,0x11FC,0x0004};
-      static const uint16_t g_u4F7F[] = {0x0880,0x1880,0x18FE,0x2880,0x4880,0x08F8,0x0904,0x0A02,0x0C02,0x0802,0x0BFE,0x0802,0x0802,0x0802,0x0802,0x0000};
-      static const uint16_t g_u7528[] = {0x0100,0x7FFE,0x4102,0x4102,0x7FFE,0x4102,0x4102,0x7FFE,0x4102,0x4102,0x4102,0x4102,0x4102,0x4102,0x4102,0x4002};
-      static const uint16_t g_u4E0A[] = {0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0100,0x0104,0x0104,0x0104,0x7FFE,0x0000,0x0000,0x0000,0x0000,0x0000};
-      static const uint16_t g_u4E0B[] = {0x7FFE,0x0100,0x0100,0x0100,0x0100,0x0100,0x0120,0x0120,0x0110,0x0110,0x0108,0x0104,0x0102,0x0100,0x0100,0x0000};
-      static const uint16_t g_u952E[] = {0x0840,0x1840,0x0840,0x7EFE,0x1924,0x1144,0xF144,0x01FC,0x0140,0x0144,0x01FE,0x0140,0x0544,0x0928,0x1110,0x6100};
-      static const uint16_t g_u9009[] = {0x0100,0x0100,0x01FC,0x2100,0x1110,0x1110,0x1FFF,0x0110,0x0110,0x0110,0x4428,0x2424,0x1422,0x0BC2,0x00FE,0x0000};
-      static const uint16_t g_u62E9[] = {0x1080,0x10BE,0x25A2,0xE5A2,0x25BE,0x2120,0x2FFC,0x2120,0x2120,0x2FFC,0x2120,0x2120,0x2120,0x2120,0x2520,0x2220};
-      static const uint16_t g_u6309[] = {0x1040,0x1040,0x11FC,0xFD04,0x11FC,0x1104,0x2104,0x21FC,0x4104,0x1104,0x11F8,0x1100,0x1104,0x110A,0x11F1,0x0000};
-      static const uint16_t g_u5FC3[] = {0x0100,0x0100,0x0100,0x0100,0x0100,0x2120,0x4110,0x4110,0x4108,0x4107,0x3FF8,0x0100,0x0D00,0x1100,0x6100,0x0000};
-      static const uint16_t g_u706B[] = {0x0100,0x0100,0x0100,0x0100,0x1110,0x0920,0x0540,0x0540,0x0380,0x0540,0x0920,0x1110,0x2108,0x4104,0x8102,0x0000};
-      static const uint16_t g_u7BAD[] = {0x1554,0x5554,0x3FFF,0x1554,0x1010,0x1110,0x1510,0x1910,0x1010,0x11FC,0x1110,0x1110,0x1110,0x1110,0x1110,0x0000};
-
-      switch(unicode) {
-        case 0x8BBE: return g_u8BBE; case 0x7F6E: return g_u7F6E; case 0x8BED: return g_u8BED; case 0x8A00: return g_u8A00;
-        case 0x7EE7: return g_u7EE7; case 0x7EED: return g_u7EED; case 0x65B0: return g_u65B0; case 0x6E38: return g_u6E38;
-        case 0x620F: return g_u620F; case 0x9000: return g_u9000; case 0x51FA: return g_u51FA; case 0x8FD4: return g_u8FD4;
-        case 0x56DE: return g_u56DE; case 0x786E: return g_u786E; case 0x8BA4: return g_u8BA4; case 0x4E2D: return g_u4E2D;
-        case 0x6587: return g_u6587; case 0x82F1: return g_u82F1; case 0x8D44: return g_u8D44; case 0x6E90: return g_u6E90;
-        case 0x5929: return g_u5929; case 0x77FF: return g_u77FF; case 0x673A: return g_u673A; case 0x91D1: return g_u91D1;
-        case 0x544A: return g_u544A; case 0x8B66: return g_u8B66; case 0x7194: return g_u7194; case 0x7089: return g_u7089;
-        case 0x88C5: return g_u88C5; case 0x914D: return g_u914D; case 0x4ED3: return g_u4ED3; case 0x5E93: return g_u5E93;
-        case 0x5DE5: return g_u5DE5; case 0x5382: return g_u5382; case 0x6982: return g_u6982; case 0x89C2: return g_u89C2;
-        case 0x72B6: return g_u72B6; case 0x6001: return g_u6001; case 0x5728: return g_u5728; case 0x7EBF: return g_u7EBF;
-        case 0x79BB: return g_u79BB; case 0x94F1: return g_u94F1; case 0x96F6: return g_u96F6; case 0x4EF6: return g_u4EF6;
-        case 0x6CA1: return g_u6CA1; case 0x6709: return g_u6709; case 0x7269: return g_u7269; case 0x4EA7: return g_u4EA7;
-        case 0x7EC4: return g_u7EC4; case 0x8F66: return g_u8F66; case 0x95F4: return g_u95F4; case 0x53D1: return g_u53D1;
-        case 0x5C04: return g_u5C04; case 0x573A: return g_u573A; case 0x8FDB: return g_u8FDB; case 0x5165: return g_u5165;
-        case 0x6A21: return g_u6A21; case 0x5F0F: return g_u5F0F; case 0x4E3B: return g_u4E3B; case 0x83DC: return g_u83DC;
-        case 0x5355: return g_u5355; case 0x822A: return g_u822A; case 0x5C40: return g_u5C40;
-        case 0x5C06: return g_u5C06; case 0x5220: return g_u5220; case 0x9664: return g_u9664; case 0x5B58: return g_u5B58;
-        case 0x6863: return g_u6863; case 0x4F7F: return g_u4F7F; case 0x7528: return g_u7528; case 0x4E0A: return g_u4E0A;
-        case 0x4E0B: return g_u4E0B; case 0x952E: return g_u952E; case 0x9009: return g_u9009; case 0x62E9: return g_u62E9;
-        case 0x6309: return g_u6309; case 0x5FC3: return g_u5FC3; case 0x706B: return g_u706B; case 0x7BAD: return g_u7BAD;
-        default: return nullptr;
-      }
+    if (vManeuver.length() > 0.1f) drawMarker(vManeuver, "MNV", 0.2f, 0.6f, 1.0f);
   }
 
   void buildFontAtlas() {
-      const int ATLAS_SIZE = 512;
+      const int ATLAS_SIZE = 1024;
       std::vector<unsigned char> atlasData(ATLAS_SIZE * ATLAS_SIZE, 0);
       
-      // Reserved white pixel at 0,0 for solid primitives (pixel-perfect)
       for(int y=0; y<4; y++) for(int x=0; x<4; x++) atlasData[y*ATLAS_SIZE + x] = 255;
-      glyphCache[0] = {0.5f/ATLAS_SIZE, 0.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 4, 4};
+      glyphCache[0] = {0.5f/ATLAS_SIZE, 0.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 3.5f/ATLAS_SIZE, 4, 4, 0, 0, 0};
 
+      std::ifstream file("assets/fonts/SourceHanSansCN-Regular.otf", std::ios::binary | std::ios::ate);
+      if (!file.is_open()) {
+          std::cerr << "Failed to open font file: assets/fonts/SourceHanSansCN-Regular.otf" << std::endl;
+          return;
+      }
+      std::streamsize size = file.tellg();
+      file.seekg(0, std::ios::beg);
+      fontBuffer = new unsigned char[size];
+      if (!file.read((char*)fontBuffer, size)) return;
+      
+      if (!stbtt_InitFont(&fontInfo, fontBuffer, 0)) {
+          std::cerr << "Failed to init stb_truetype" << std::endl;
+          delete[] fontBuffer; fontBuffer = nullptr;
+          return;
+      }
+
+      const int FONT_HEIGHT = 24;
       int curX = 8, curY = 0, maxHeight = 0;
+      float scale = stbtt_ScaleForPixelHeight(&fontInfo, (float)FONT_HEIGHT);
 
-      auto packBitmap = [&](unsigned int unicode, const uint16_t* bitmap, int w, int h) {
-          if (curX + w + 2 >= ATLAS_SIZE) { curX = 0; curY += maxHeight + 2; maxHeight = 0; }
-          if (curY + h + 2 >= ATLAS_SIZE) return;
-
-          for (int r = 0; r < h; r++) {
-              uint16_t rowData = bitmap[r];
-              for (int c = 0; c < w; c++) {
-                  if (rowData & (1 << (w - 1 - c))) {
-                      // Flip Y for standard OpenGL orientation if needed, but we flip UVs in drawText
-                      atlasData[(curY + r) * ATLAS_SIZE + (curX + c)] = 255;
+      auto bakeChar = [&](unsigned int unicode) {
+          if (glyphCache.count(unicode)) return;
+          int w, h, xoff, yoff;
+          unsigned char* bitmap = stbtt_GetCodepointBitmap(&fontInfo, scale, scale, (int)unicode, &w, &h, &xoff, &yoff);
+          if (bitmap) {
+              if (curX + w + 1 >= ATLAS_SIZE) { curX = 0; curY += maxHeight + 1; maxHeight = 0; }
+              if (curY + h + 1 >= ATLAS_SIZE) { stbtt_FreeBitmap(bitmap, 0); return; }
+              for (int j = 0; j < h; j++) {
+                  for (int k = 0; k < w; k++) {
+                      atlasData[(curY + j) * ATLAS_SIZE + (curX + k)] = bitmap[j * w + k];
                   }
               }
+              int advance;
+              stbtt_GetCodepointHMetrics(&fontInfo, (int)unicode, &advance, nullptr);
+              glyphCache[unicode] = {
+                  (float)curX / ATLAS_SIZE, (float)curY / ATLAS_SIZE,
+                  (float)(curX + w) / ATLAS_SIZE, (float)(curY + h) / ATLAS_SIZE,
+                  w, h, (float)xoff, (float)yoff, (float)advance * scale
+              };
+              curX += w + 1;
+              if (h > maxHeight) maxHeight = h;
+              stbtt_FreeBitmap(bitmap, 0);
           }
-          // Half-texel offset for pixel-perfect sampling (Industrial practice)
-          float uv_off = 0.1f; 
-          glyphCache[unicode] = { (float)(curX + uv_off) / ATLAS_SIZE, (float)(curY + uv_off) / ATLAS_SIZE, 
-                                  (float)(curX + w - uv_off) / ATLAS_SIZE, (float)(curY + h - uv_off) / ATLAS_SIZE, w, h };
-          curX += w + 2;
-          if (h > maxHeight) maxHeight = h;
       };
 
-      // Pack ASCII properly
-      for (int i = 32; i < 127; i++) {
-          uint64_t g = getGlyph5x7((char)i);
-          uint16_t rowData[7];
-          // Bits 5..1 represent the 5 pixels. Shift right by 1 to align with 4..0.
-          for(int r=0; r<7; r++) rowData[r] = (uint16_t)((g >> ((6-r)*8)) & 0xFF) >> 1;
-          packBitmap(i, rowData, 5, 7);
-      }
-
-      // Pack Chinese (Scan all hardcoded glyphs for industrial robustness)
-      for (int i = 128; i < 0xFFFF; i++) {
-          const uint16_t* b = getGlyph16x16((unsigned int)i);
-          if (b) packBitmap(i, b, 16, 16);
-      }
+      // 1. Bake ASCII
+      for (int i = 32; i < 127; i++) bakeChar(i);
+      // 2. Bake common Chinese from localization.h
+      const unsigned int common_cn[] = {
+          0x8BBE, 0x7F6E, 0x8BED, 0x8A00, 0x7EE7, 0x7EED, 0x65B0, 0x6E38, 0x620F, 0x9000, 0x51FA, 0x8FD4, 0x56DE, 0x786E, 0x8BA4, 0x4E2D,
+          0x6587, 0x82F1, 0x8D44, 0x6E90, 0x5929, 0x77FF, 0x673A, 0x91D1, 0x544A, 0x8B66, 0x7194, 0x7089, 0x88C5, 0x914D, 0x4ED3, 0x5E93,
+          0x5DE5, 0x5382, 0x6982, 0x89C2, 0x72B6, 0x6001, 0x5728, 0x7EBF, 0x79BB, 0x94F1, 0x96F6, 0x4EF6, 0x6CA1, 0x6709, 0x7269, 0x4EA7,
+          0x7EC4, 0x8F66, 0x95F4, 0x53D1, 0x5C04, 0x573A, 0x8FDB, 0x5165, 0x6A21, 0x5F0F, 0x4E3B, 0x83DC, 0x5355, 0x822A, 0x5C40, 0x5C06,
+          0x5220, 0x9664, 0x5B58, 0x6863, 0x4F7F, 0x7528, 0x4E0A, 0x4E0B, 0x952E, 0x9009, 0x62E9, 0x6309, 0x5FC3, 0x706B, 0x7BAD
+      };
+      for (unsigned int u : common_cn) bakeChar(u);
 
       glGenTextures(1, &fontTexture);
       glBindTexture(GL_TEXTURE_2D, fontTexture);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, ATLAS_SIZE, ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, atlasData.data());
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, ATLAS_SIZE, ATLAS_SIZE, 0, GL_RED, GL_UNSIGNED_BYTE, atlasData.data());
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   }
 
-public:
-  enum Align { LEFT, CENTER, RIGHT };
   void drawText(float x, float y, const char* text, float size, float r, float g, float b, float a = 1.0f, bool shadow = true, Align align = LEFT) {
     if (!text || !text[0]) return;
-    
-    // Scale parameters
-    float px = size * 0.15f;
-    float cw = px * 6.0f; // Advanced step
-    
-    struct CachedChar { unsigned int unicode; float w_step; };
+    float px = size * 0.05f;
+    struct CachedChar { unsigned int unicode; float xadvance; };
     std::vector<CachedChar> cached;
     float total_w = 0;
-    
     const unsigned char* p = (const unsigned char*)text;
     while (*p) {
-        unsigned int u = 0;
-        int step = 0;
-        if (*p < 0x80) { 
-            u = *p; step = 1; 
-        }
-        else if ((*p & 0xE0) == 0xE0 && *(p+1) && *(p+2)) {
-            // Valid UTF-8 (3 bytes)
-            u = ((*p & 0x0F) << 12) | ((*(p+1) & 0x3F) << 6) | (*(p+2) & 0x3F);
-            step = 3;
-        } else if (*p >= 0x81 && *(p+1)) {
-            // GBK fallback (2 bytes). We map the specific bytes we observed in the 
-            // localization dictionary to their correct internal Unicode index for our font atlas.
-            unsigned char b1 = *p;
-            unsigned char b2 = *(p+1);
-            unsigned int gbk = (b1 << 8) | b2;
-            step = 2;
-            
-            // Map GBK hex codes back to our custom Unicode glyphs
-            // (These are the GB2312/GBK hex representations of the chars in our localization file)
-            switch(gbk) {
-                case 0xBCCC: u = 0x7EE7; break; // 继
-                case 0xD0F8: u = 0x7EED; break; // 续
-                case 0xD3CE: u = 0x6E38; break; // 游
-                case 0xCFB7: u = 0x620F; break; // 戏
-                case 0xD0C2: u = 0x65B0; break; // 新
-                case 0xC9E8: u = 0x8BBE; break; // 设
-                case 0xD6C3: u = 0x7F6E; break; // 置
-                case 0xCDCBC: u = 0x9000; break; // 退
-                case 0xB3F6: u = 0x51FA; break; // 出
-                case 0xBEAF: u = 0x8B66; break; // 警
-                case 0xB8E6: u = 0x544A; break; // 告
-                case 0xBDAB: u = 0x5C06; break; // 将
-                case 0xC9BE: u = 0x5220; break; // 删
-                case 0xB3FD: u = 0x9664; break; // 除
-                case 0xB4E6: u = 0x5B58; break; // 存
-                case 0xB5B5: u = 0x6863; break; // 档
-                case 0xCAB9: u = 0x4F7F; break; // 使
-                case 0xD3C3: u = 0x7528; break; // 用
-                case 0xC9CF: u = 0x4E0A; break; // 上
-                case 0xCFC2: u = 0x4E0B; break; // 下
-                case 0xBCFC: u = 0x952E; break; // 键
-                case 0xD1A1: u = 0x9009; break; // 选
-                case 0xD4F1: u = 0x62E9; break; // 择
-                case 0xB0B4: u = 0x6309; break; // 按
-                case 0xBBD8: u = 0x56DE; break; // 回
-                case 0xB3B5: u = 0x8F66; break; // 车
-                case 0xC8B7: u = 0x786E; break; // 确
-                case 0xC8CF: u = 0x8BA4; break; // 认
-                case 0xD3EF: u = 0x8BED; break; // 语
-                case 0xD1D4: u = 0x8A00; break; // 言
-                case 0xD3A2: u = 0x82F1; break; // 英
-                case 0xD6D0: u = 0x4E2D; break; // 中
-                case 0xCEC4: u = 0x6587; break; // 文
-                case 0xB7B5: u = 0x8FD4; break; // 返
-                case 0xD7CA: u = 0x8D44; break; // 资
-                case 0xBDF0: u = 0x91D1; break; // 金
-                case 0xCCEC: u = 0x5929; break; // 天
-                case 0xBCAB: u = 0x822A; break; // 航
-                case 0xBED6: u = 0x5C40; break; // 局
-                case 0xD0C4: u = 0x5FC3; break; // 心
-                case 0xB9A5: u = 0x5DE5; break; // 工
-                case 0xB3A7: u = 0x5382; break; // 厂
-                case 0xB8C5: u = 0x6982; break; // 概
-                case 0xC0C0: u = 0x89C2; break; // 览
-                case 0xD7B4: u = 0x72B6; break; // 状
-                case 0xCCA1: u = 0x6001; break; // 态
-                case 0xD4DA: u = 0x5728; break; // 在
-                case 0xCFDF: u = 0x7EBF; break; // 线
-                case 0xC0EB: u = 0x79BB; break; // 离
-                case 0xBFF3: u = 0x77FF; break; // 矿
-                case 0xBBFA: u = 0x673A; break; // 机
-                case 0xC8DB: u = 0x7194; break; // 熔
-                case 0xC2AF: u = 0x7089; break; // 炉
-                case 0xD7B0: u = 0x88C5; break; // 装
-                case 0xC5E4: u = 0x914D; break; // 配
-                case 0xB2D6: u = 0x4ED3; break; // 仓
-                case 0xBFE2: u = 0x5E93; break; // 库
-                case 0xD4B4: u = 0x6E90; break; // 源
-                case 0xBBE0: u = 0x706B; break; // 火
-                case 0xBCFD: u = 0x7BAD; break; // 箭
-                case 0xC1E3: u = 0x96F6; break; // 零
-                case 0xBCEE: u = 0x4EF6; break; // 件
-                case 0xC3BB: u = 0x6CA1; break; // 没
-                case 0xD3D0: u = 0x6709; break; // 有
-                case 0xCEEF: u = 0x7269; break; // 物
-                case 0xB2FA: u = 0x4EA7; break; // 产
-                case 0xD7E9: u = 0x7EC4; break; // 组
-                case 0xBCE4: u = 0x95F4; break; // 间
-                case 0xB7A2: u = 0x53D1; break; // 发
-                case 0xC9E4: u = 0x5C04; break; // 射
-                case 0xB3A1: u = 0x573A; break; // 场
-                case 0xBDF8: u = 0x8FDB; break; // 进
-                case 0xC8EB: u = 0x5165; break; // 入
-                case 0xC4A3: u = 0x6A21; break; // 模
-                case 0xCABD: u = 0x5F0F; break; // 式
-                case 0xD6F7: u = 0x4E3B; break; // 主
-                case 0xB2CB: u = 0x83DC; break; // 菜
-                case 0xB5A5: u = 0x5355; break; // 单
-                default: 
-                    u = gbk + 0x10000; // Offset Unknown GBK to keep it out of valid ranges but > 128
-                    break;
-            }
-        } else { 
-            step = 1; u = *p; 
-        } 
-        
-        float w_step = (u > 128) ? cw * 2.0f : cw;
-        cached.push_back({u, w_step});
-        total_w += w_step;
+        unsigned int u = 0; int step = 0;
+        if (*p < 0x80) { u = *p; step = 1; }
+        else if ((*p & 0xE0) == 0xE0) { u = ((*p & 0x0F) << 12) | ((*(p+1) & 0x3F) << 6) | (*(p+2) & 0x3F); step = 3; }
+        else { step = 1; u = *p; }
+        auto it = glyphCache.find(u);
+        float adv = (it != glyphCache.end()) ? it->second.xadvance * px : (u > 128 ? px * 24.0f : px * 12.0f);
+        cached.push_back({u, adv});
+        total_w += adv;
         p += step;
     }
-    if (total_w > 0) total_w -= px;
-
     float ox = x;
     if (align == CENTER) ox -= total_w * 0.5f;
     else if (align == RIGHT) ox -= total_w;
-
     auto renderString = [&](float startX, float startY, float cr, float cg, float cb, float ca) {
         float curX = startX;
         for (const auto& cc : cached) {
             auto it = glyphCache.find(cc.unicode);
             if (it != glyphCache.end()) {
-                const GlyphInfo& g = it->second;
-                // Scale quad to match visual density (Industrial font scaling)
-                float quad_scale = (cc.unicode > 128) ? 0.75f : 1.0f;
-                float w = (float)g.w * px * quad_scale;
-                float h = (float)g.h * px * quad_scale;
-                float x1 = curX, x2 = curX + w, y1 = startY - h/2.0f, y2 = startY + h/2.0f;
+                const GlyphInfo& gi = it->second;
+                float x1 = curX + gi.xoff * px;
+                float x2 = x1 + gi.w * px;
+                float y2 = startY - gi.yoff * px; // Top of glyph
+                float y1 = y2 - gi.h * px;         // Bottom of glyph
                 
-                addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
-                addVertex(x2, y1, cr, cg, cb, ca, g.u2, g.v2);
-                addVertex(x2, y2, cr, cg, cb, ca, g.u2, g.v1);
-                addVertex(x2, y2, cr, cg, cb, ca, g.u2, g.v1);
-                addVertex(x1, y2, cr, cg, cb, ca, g.u1, g.v1);
-                addVertex(x1, y1, cr, cg, cb, ca, g.u1, g.v2);
-            } else if (cc.unicode > 32) {
-                // Unknown glyph - use a hollow box and warn developer
-                static unsigned int last_missing = 0;
-                if (cc.unicode != last_missing) {
-                    if (cc.unicode >= 0x10000) {
-                        std::cout << "[Renderer2D] Unknown GBK Double-byte: 0x" << std::hex << (cc.unicode - 0x10000) << std::dec << std::endl;
-                    } else {
-                        std::cout << "[Renderer2D] Missing Glyph: 0x" << std::hex << cc.unicode << std::dec << " in text: " << text << std::endl;
-                    }
-                    last_missing = cc.unicode;
-                }
-                addRectOutline(curX + cc.w_step/2.0f, startY, cc.w_step * 0.8f, cc.w_step * 0.8f, cr, cg, cb, ca * 0.5f, 0.001f);
+                addVertex(x1, y1, cr, cg, cb, ca, gi.u1, gi.v2);
+                addVertex(x2, y1, cr, cg, cb, ca, gi.u2, gi.v2);
+                addVertex(x2, y2, cr, cg, cb, ca, gi.u2, gi.v1);
+                addVertex(x2, y2, cr, cg, cb, ca, gi.u2, gi.v1);
+                addVertex(x1, y2, cr, cg, cb, ca, gi.u1, gi.v1);
+                addVertex(x1, y1, cr, cg, cb, ca, gi.u1, gi.v2);
             }
-            curX += cc.w_step;
+            curX += cc.xadvance;
         }
     };
-
-    if (shadow) renderString(ox + size * 0.08f, y - size * 0.08f, 0, 0, 0, a * 0.8f);
+    if (shadow) renderString(ox + size * 0.01f, y + size * 0.01f, 0, 0, 0, a * 0.5f);
     renderString(ox, y, r, g, b, a);
   }
+
 
   void drawInt(float x, float y, int val, float size, float r, float g, float b, float a = 1.0f, Align align = LEFT) {
       char buf[32]; snprintf(buf, sizeof(buf), "%d", val);

@@ -12,6 +12,7 @@ struct HydroData {
     std::vector<int> strahler;      // Strahler Stream Order
     std::vector<float> waterTable;   // Surface water / Lake depth
     std::vector<float> filledHeight; // Terrain height after depression filling
+    std::vector<float> sedimentLoad; // Current sediment carrier load
 };
 
 class HydroSimulator {
@@ -25,6 +26,7 @@ public:
         data.strahler.assign(w * h, 0);
         data.waterTable.assign(w * h, 0.0f);
         data.filledHeight.assign(w * h, 0.0f);
+        data.sedimentLoad.assign(w * h, 0.0f);
     }
 
     // Main Entry Point: Disabling coarse global erosion to prevent 78km-wide riverbed artifacts.
@@ -34,18 +36,26 @@ public:
         calculateFlowDirections();
         calculateAccumulation(precipitation, temperature, heightMap);
         
-        // --- Lake Breaching & Evaporation Model ---
-        // Priority-Flood routing assumes basins fill to the brim. Here we physically
-        // lower the water surface for rendering based on evaporation and flow carving.
+        // --- Refined Sink Classification (Water Balance: Inflow vs Evaporation) ---
         for (int i = 0; i < width * height; i++) {
             float lakeDepth = data.filledHeight[i] - heightMap[i];
-            if (lakeDepth > 0.002f) { // Significant basin
-                if (data.accumulation[i] < 20.0f) {
-                    // Evaporation dominant: Drop water level for low flow areas in huge basins
-                    data.filledHeight[i] = heightMap[i] + std::min(lakeDepth, 0.001f);
+            if (lakeDepth > 0.0001f) { 
+                // Local potential evaporation scale
+                float pEvap = std::max(0.0f, temperature[i] + 15.0f) * 0.05f;
+                float inflow = data.accumulation[i]; 
+
+                if (inflow > pEvap * 1.5f) {
+                    // Humid: Permanent lake with outlet.
+                    // Boosted Breaching: High flow or proximity to coast carves deeper
+                    float breachFactor = (inflow > 50.0f) ? 0.005f : 0.001f;
+                    data.filledHeight[i] -= std::max(breachFactor, lakeDepth * 0.3f * (inflow / 200.0f));
+                    data.filledHeight[i] = std::max(heightMap[i] + 0.0001f, data.filledHeight[i]);
+                } else if (inflow > pEvap * 0.2f) {
+                    // Semi-Arid: Seasonal/Ephemeral lake. Partial fill.
+                    data.filledHeight[i] = heightMap[i] + lakeDepth * 0.2f;
                 } else {
-                    // River Breaching: High flow carves a deep gorge through the basin rim
-                    data.filledHeight[i] = std::max(heightMap[i] + 0.002f, data.filledHeight[i] - 0.005f);
+                    // Arid: Endorheic Basin / Salt Flat. Drain the "water" but keep the depression.
+                    data.filledHeight[i] = heightMap[i];
                 }
             }
         }
@@ -89,10 +99,10 @@ private:
 
                 if (!visited[nIdx]) {
                     visited[nIdx] = true;
-                    // Add a tiny epsilon (1e-6) to force a drainage slope
+                    // Add a slightly more significant epsilon (1e-5) to force a drainage slope
                     // This prevents massive flat "blobs" by giving water a direction
-                    if (data.filledHeight[nIdx] < curr.h + 1e-6f) {
-                        data.filledHeight[nIdx] = curr.h + 1e-6f;
+                    if (data.filledHeight[nIdx] < curr.h + 1e-5f) {
+                        data.filledHeight[nIdx] = curr.h + 1e-5f;
                     }
                     pq.push({nx, ny, data.filledHeight[nIdx]});
                 }
@@ -141,6 +151,7 @@ private:
             float netWater = std::max(0.0f, precip[i] - evap); 
             if (heightMap[i] <= 0.45f) netWater = 0.0f;
             data.accumulation[i] = netWater;
+            data.sedimentLoad[i] = 0.0f;
         }
 
         int dx[] = {1, 1, 0, -1, -1, -1, 0, 1}; 
@@ -153,20 +164,32 @@ private:
                 int nx = (idx % width + dx[dir] + width) % width;
                 int ny = std::clamp(idx / width + dy[dir], 0, height - 1);
                 int nIdx = ny * width + nx;
-                data.accumulation[nIdx] += data.accumulation[idx];
-            }
-        }
 
-        // --- ENHANCED: Hydraulic Erosion & Sedimentation ---
-        // We modify the WATER SURFACE level (filledHeight) to reflect carved valleys
-        for (int i = 0; i < width * height; i++) {
-            if (heightMap[i] > 0.455f && data.accumulation[i] > 1.0f) { 
-                int dir = data.flowDir[i];
-                if (dir != -1) {
-                    float slope = 0.01f; // assume some slope for carving
-                    // Carve valley deeper where flow is strong (Strahler-like strength)
-                    float carve = std::min(0.03f, powf(data.accumulation[i], 0.5f) * 0.005f);
-                    data.filledHeight[i] -= carve;
+                // --- Erosion & Sedimentation Logic ---
+                if (heightMap[idx] > 0.45f) { // On Land
+                    float slope = std::max(0.0001f, (data.filledHeight[idx] - data.filledHeight[nIdx]));
+                    // Transport Capacity C = f(Volume, Slope)
+                    float capacity = powf(data.accumulation[idx], 0.7f) * slope * 0.05f;
+                    float diff = capacity - data.sedimentLoad[idx];
+                    
+                    float k_er = 0.15f; // Erosion/Deposition coefficient
+                    float deltaH = diff * k_er;
+                    
+                    // Clamp deltaH to prevent unrealistic spikes/pits
+                    deltaH = std::clamp(deltaH, -0.01f, 0.01f);
+
+                    data.filledHeight[idx] -= deltaH;
+                    data.sedimentLoad[idx] += deltaH;
+
+                    // Propagate to downstream neighbor
+                    data.accumulation[nIdx] += data.accumulation[idx];
+                    data.sedimentLoad[nIdx] += std::max(0.0f, data.sedimentLoad[idx]);
+                } else {
+                    // Entering Ocean: Drop all sediment (Delta Formation)
+                    if (data.sedimentLoad[idx] > 0.0f) {
+                        data.filledHeight[idx] += data.sedimentLoad[idx] * 0.5f; // Deposit at coast
+                        data.sedimentLoad[idx] = 0.0f;
+                    }
                 }
             }
         }
@@ -232,17 +255,72 @@ public:
             textureData[i * 4 + 0] = data.filledHeight[i];
             textureData[i * 4 + 1] = data.accumulation[i];
             textureData[i * 4 + 2] = (float)data.strahler[i];
-            textureData[i * 4 + 3] = 0.0f;
+            textureData[i * 4 + 3] = (float)data.flowDir[i];
         }
 
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, textureData.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
 
     GLuint textureID = 0;
+
+    // --- STATIC UTILITY: Local Priority Flood for Quadtree Nodes ---
+    // grid: a w*w grid of heights to be filled
+    // boundaries: heights of pixels on the 4 edges (must be provided from global map)
+    static void fillDepressionsLocal(int res, std::vector<float>& grid, const std::vector<float>& boundaries) {
+        struct Node {
+            int x, y;
+            float h;
+            bool operator>(const Node& other) const { return h > other.h; }
+        };
+        std::priority_queue<Node, std::vector<Node>, std::greater<Node>> pq;
+        std::vector<bool> visited(res * res, false);
+
+        // 1. Seed boundaries from the global map
+        for (int i = 0; i < res; i++) {
+            // Top (y=0)
+            pq.push({i, 0, boundaries[i]});
+            visited[i] = true;
+            // Bottom (y=res-1)
+            pq.push({i, res - 1, boundaries[res + i]});
+            visited[(res - 1) * res + i] = true;
+            // Left (x=0)
+            if (!visited[i * res]) {
+                pq.push({0, i, boundaries[2 * res + i]});
+                visited[i * res] = true;
+            }
+            // Right (x=res-1)
+            if (!visited[i * res + res - 1]) {
+                pq.push({res - 1, i, boundaries[3 * res + i]});
+                visited[i * res + res - 1] = true;
+            }
+        }
+
+        int dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+        int dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
+
+        while (!pq.empty()) {
+            Node curr = pq.top(); pq.pop();
+            for (int i = 0; i < 8; i++) {
+                int nx = curr.x + dx[i];
+                int ny = curr.y + dy[i];
+                if (nx < 0 || nx >= res || ny < 0 || ny >= res) continue;
+                int nIdx = ny * res + nx;
+
+                if (!visited[nIdx]) {
+                    visited[nIdx] = true;
+                    // Apply the same tiny gradient for drainage
+                    if (grid[nIdx] < curr.h + 0.00001f) {
+                        grid[nIdx] = curr.h + 0.00001f;
+                    }
+                    pq.push({nx, ny, grid[nIdx]});
+                }
+            }
+        }
+    }
 };
 
 } // namespace Hydro

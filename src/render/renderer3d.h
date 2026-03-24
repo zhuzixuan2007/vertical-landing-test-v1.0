@@ -460,6 +460,8 @@ public:
   Vec3 lightDir;
 
   GLint ut_hydroMap = -1;
+  GLint ut_localHydroMap = -1;
+  GLint ut_hasLocalHydro = -1;
   Mesh sharedPatchMesh;
   Terrain::QuadtreeTerrain* terrain = nullptr;
   Vegetation::VegetationSystem* vegSystem = nullptr;
@@ -2980,19 +2982,61 @@ R"(
       
       uniform sampler2D uTectonicMap;
       uniform sampler2D uHydroMap; 
+      uniform sampler2D uLocalHydroMap;
+      uniform int uHasLocalHydro;
 
       out vec3 vRelViewPos; 
       out vec3 vNormal;
       out vec2 vUV;
+      out vec2 vLocalUV;
       out vec3 vLocalPos;
       out float vElevation;
       out float vWaterDepth;
+      out float vSlope;
+
+      vec3 hash33(vec3 p) {
+        p = fract(p * vec3(443.897, 441.423, 437.195));
+        p += dot(p, p.yzx + 19.19);
+        return fract((p.xxy + p.yzz) * p.zyx);
+      }
+      
+      float worley(vec3 p) {
+        vec3 i = floor(p); vec3 f = fract(p);
+        float minDist = 1.0;
+        for (int z = -1; z <= 1; z++) {
+          for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+              vec3 neighbor = vec3(float(x), float(y), float(z));
+              vec3 point = hash33(i + neighbor);
+              vec3 diff = neighbor + point - f;
+              minDist = min(minDist, length(diff));
+            }
+          }
+        }
+        return minDist;
+      }
 
       float hash(vec3 p) {
         p = fract(p * vec3(443.897, 441.423, 437.195));
         p += dot(p, p.yzx + 19.19);
         return fract((p.x + p.y) * p.z);
       }
+      
+      vec4 sampleHydroSmooth(vec2 uv) {
+          vec2 res = vec2(512.0, 256.0);
+          vec2 st = uv * res - 0.5;
+          vec2 i = floor(st);
+          vec2 f = fract(st);
+          vec4 t00 = texture(uHydroMap, (i + vec2(0.5, 0.5)) / res);
+          vec4 t10 = texture(uHydroMap, (i + vec2(1.5, 0.5)) / res);
+          vec4 t01 = texture(uHydroMap, (i + vec2(0.5, 1.5)) / res);
+          vec4 t11 = texture(uHydroMap, (i + vec2(1.5, 1.5)) / res);
+          float r = mix(mix(t00.r, t10.r, f.x), mix(t01.r, t11.r, f.x), f.y);
+          float g = mix(mix(t00.g, t10.g, f.x), mix(t01.g, t11.g, f.x), f.y);
+          vec4 point = texture(uHydroMap, uv);
+          return vec4(r, g, point.b, point.a);
+      }
+
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
         f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
@@ -3030,6 +3074,15 @@ R"(
         return n * 0.0000015; // ~10m on 6000km sphere
       }
 
+      float gullyNoise(vec3 p, float angle) {
+        float ca = cos(angle), sa = sin(angle);
+        float sU = p.x * ca - p.z * sa;
+        float sV = p.x * sa + p.z * ca;
+        // Stretch in sV direction (aligned with gradient/slope)
+        vec3 pS = vec3(sU * 1500000.0, p.y * 1500000.0, sV * 40000.0);
+        return ridgedFbm(pS, 3);
+      }
+
       float sampleTectonic(vec2 uv) {
           vec2 res = vec2(512.0, 256.0);
           vec2 st = uv * res - 0.5;
@@ -3051,6 +3104,7 @@ R"(
       }
 
       void main() {
+        vLocalUV = aPos.xz + 0.5;
         vec3 cubePos = uNodePos + aPos.x * uNodeSide + aPos.z * uNodeUp;
         vec3 normPos = normalize(cubePos);
         float fV_phi = acos(clamp(normPos.y, -1.0, 1.0));
@@ -3084,7 +3138,10 @@ R"(
         hRefined += smoothstep(0.6, 0.9, cliffNoise) * 0.007 * cMask;
 
         // 2.1 River Valley Carving (V-to-U shaped)
-        vec4 hydro = texture(uHydroMap, geoUV);
+        vec4 hydro = sampleHydroSmooth(geoUV);
+        if (uHasLocalHydro == 1) {
+            hydro.r = texture(uLocalHydroMap, vLocalUV).r;
+        }
         float strahler = hydro.b; 
         if (strahler >= 2.0 && plateBase > 0.445) {
             float vNoise = noise3d(normPos * 250.0 + noise3d(normPos * 120.0) * 0.004);
@@ -3094,10 +3151,14 @@ R"(
             hRefined -= (1.0 - profile) * depth;
         }
 
-        float hydroMask = smoothstep(0.0001, 0.01, hydro.r - plateBase);
-        hRefined = mix(hRefined, hydro.r, hydroMask * 0.97);
+        // float hydroMask = smoothstep(0.0001, 0.01, hydro.r - plateBase);
+        // hRefined = mix(hRefined, hydro.r, hydroMask * 0.97);
 
-        float sLevel = 0.44;
+        float sLevel = 0.45;
+        float hydroDiff = hydro.r - hRefined;
+        float hydroMask = smoothstep(0.0001, 0.005, hydroDiff);
+        hRefined = mix(hRefined, hydro.r, hydroMask * 1.0);
+
         if (hRefined < sLevel && hRefined > 0.38) {
             float shelfT = (hRefined - 0.38) / (sLevel - 0.38);
             hRefined = mix(0.395, sLevel - 0.001, smoothstep(0.0, 1.0, shelfT));
@@ -3106,8 +3167,27 @@ R"(
         float finalH = (hRefined < sLevel) ? 0.0 : (hRefined - sLevel) / (1.0 - sLevel) * uMaxElevation / uPlanetRadius;
         
         // 10m Scale detail (Land Only)
+        float currentSlope = 0.0;
         if (hRefined >= sLevel) {
-            finalH += detail10m(normPos);
+            float epsS = 0.0015;
+            float hX = (sampleTectonic(geoUV + vec2(epsS, 0.0)) - sampleTectonic(geoUV - vec2(epsS, 0.0)));
+            float hY = (sampleTectonic(geoUV + vec2(0.0, epsS)) - sampleTectonic(geoUV - vec2(0.0, epsS)));
+            currentSlope = length(vec2(hX, hY)) * 100.0;
+            float sAngle = atan(-hX, hY);
+            
+            float d10 = detail10m(normPos);
+            
+            // Slope-based high frequency details
+            float rockCracks = (1.0 - worley(normPos * 1800000.0)) * 0.000003;
+            float gullies = gullyNoise(normPos, sAngle) * 0.000002;
+            float baseNoise = (noise3d(normPos * 4000000.0) - 0.5) * 0.0000005;
+            
+            float sHigh = smoothstep(0.12, 0.25, currentSlope);
+            float sMid = smoothstep(0.04, 0.12, currentSlope) * (1.0 - sHigh);
+            float sLow = 1.0 - smoothstep(0.04, 0.12, currentSlope);
+            
+            finalH += (rockCracks * sHigh + gullies * sMid + baseNoise * sLow);
+            finalH += d10;
         }
         
         vec3 kscPos = vec3(0.1436, 0.478, 0.866);
@@ -3119,7 +3199,8 @@ R"(
         vNormal = localRotScale * normPos; 
         vUV = aUV;
         vLocalPos = normPos;
-        vWaterDepth = max(0.0, hydro.r - plateBase);
+        vWaterDepth = max(0.0, hydroDiff);
+        vSlope = currentSlope;
         gl_Position = uMVP * vec4(vRelViewPos, 1.0);
       }
     )";
@@ -3132,15 +3213,18 @@ R"(
       in vec3 vLocalPos;
       in float vElevation;
       in float vWaterDepth;
+      in vec2 vLocalUV;
+      in float vSlope;
 
+      uniform sampler2D uHydroMap;
+      uniform sampler2D uLocalHydroMap;
+      uniform int uHasLocalHydro;
+      uniform int uViewMode; 
       uniform vec3 uLightDir;
       uniform vec3 uCamPos;
       uniform float uTime;
       uniform sampler2D uTectonicMap;
       uniform sampler2D uClimateMap;
-      uniform sampler2D uHydroMap;
-      uniform int uViewMode; 
-
       out vec4 FragColor;
 
       float hash(vec3 p) {
@@ -3148,6 +3232,22 @@ R"(
         p += dot(p, p.yzx + 19.19);
         return fract((p.x + p.y) * p.z);
       }
+
+      vec4 sampleHydroSmooth(vec2 uv) {
+          vec2 res = vec2(512.0, 256.0);
+          vec2 st = uv * res - 0.5;
+          vec2 i = floor(st);
+          vec2 f = fract(st);
+          vec4 t00 = texture(uHydroMap, (i + vec2(0.5, 0.5)) / res);
+          vec4 t10 = texture(uHydroMap, (i + vec2(1.5, 0.5)) / res);
+          vec4 t01 = texture(uHydroMap, (i + vec2(0.5, 1.5)) / res);
+          vec4 t11 = texture(uHydroMap, (i + vec2(1.5, 1.5)) / res);
+          float r = mix(mix(t00.r, t10.r, f.x), mix(t01.r, t11.r, f.x), f.y);
+          float g = mix(mix(t00.g, t10.g, f.x), mix(t01.g, t11.g, f.x), f.y);
+          vec4 point = texture(uHydroMap, uv);
+          return vec4(r, g, point.b, point.a);
+      }
+
       float noise3d(vec3 p) {
         vec3 i = floor(p); vec3 f = fract(p);
         f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
@@ -3217,10 +3317,10 @@ R"(
         vec3 snow = vec3(0.92, 0.94, 1.0);
         
         vec3 surfColor;
-        float sLevel = 0.44;
+        float sLevel = 0.45;
         
         if (hRefined < sLevel || vWaterDepth > 0.0001) {
-            float depth = (hRefined < sLevel) ? (sLevel - hRefined) : vWaterDepth * 1.5;
+            float depth = (hRefined < sLevel) ? (sLevel - hRefined) : vWaterDepth * 2.0;
             surfColor = mix(shallowWater, deepWater, smoothstep(0.0, 0.15, depth));
         } else {
             float landH = (hRefined - sLevel) / (1.0 - sLevel);
@@ -3230,7 +3330,12 @@ R"(
             vec3 cMid = mix(beach, lowland, smoothstep(0.0, 0.1, landH));
             cMid = mix(cMid, forest, smoothstep(0.1, 0.45, landH));
             cMid = mix(cMid, mountainColor, smoothstep(0.45, 0.8, landH));
-            surfColor = mix(cMid, snow, smoothstep(0.8, 0.95, landH)) * albedoVar;
+            
+            float snowMask = smoothstep(0.8, 0.95, landH);
+            // Reduce snow on steep slopes (vSlope ranges ~0.0 to 0.5+)
+            snowMask *= (1.0 - smoothstep(0.08, 0.22, vSlope)); 
+            
+            surfColor = mix(cMid, snow, snowMask) * albedoVar;
         }
 
         float diff = max(dot(N, L), 0.0);
@@ -3247,7 +3352,7 @@ R"(
                 float p = climate.g / 3000.0;
                 vColor = mix(vec3(0.9, 0.9, 0.8), vec3(0.1, 0.4, 0.9), smoothstep(0.0, 1.0, p));
             } else if (uViewMode == 4) {
-                vec4 hydroData = texture(uHydroMap, fV_geoUV);
+                vec4 hydroData = sampleHydroSmooth(fV_geoUV);
                 vColor = mix(vec3(0.9, 0.8, 0.7), vec3(0.0, 0.4, 0.9), smoothstep(1.0, 7.0, hydroData.b));
                 if (vWaterDepth > 0.0001) vColor = vec3(0.0, 0.5, 1.0);
             }
@@ -3255,11 +3360,60 @@ R"(
             return;
         }
 
-        // --- River Overlay ---
+        // --- River Overlay (Segment-based Distance Field) ---
         {
-            vec4 hydroData = texture(uHydroMap, fV_geoUV);
-            if (hydroData.b >= 4.0 && hRefined > sLevel) {
-                result = mix(result, vec3(0.0, 0.1, 0.35), 0.6);
+            vec2 res = vec2(512.0, 256.0);
+            vec2 pixelPos = fV_geoUV * res;
+            vec2 cellCoords = floor(pixelPos);
+            vec2 localPos = fract(pixelPos); 
+            
+            float minDist = 1.0;
+            float maxStrahler = 0.0;
+            
+            const vec2 deltas[8] = vec2[](
+                vec2(1,0), vec2(1,1), vec2(0,1), vec2(-1,1),
+                vec2(-1,0), vec2(-1,-1), vec2(0,-1), vec2(1,-1)
+            );
+
+            // Search 3x3 for any cell (including current) that belongs to a river
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    vec2 nCoord = cellCoords + vec2(dx, dy);
+                    vec2 nUV = (nCoord + 0.5) / res;
+                    nUV.x = fract(nUV.x); // Global wrap
+                    // Use discrete sample for logic
+                    vec4 nData = texture(uHydroMap, nUV);
+                    
+                    if (nData.b >= 4.0) {
+                        // Outflow segment from this neighbor to its target
+                        int dir = int(nData.a);
+                        if (dir >= 0 && dir < 8) {
+                            vec2 p1 = nCoord + 0.5;
+                            vec2 p2 = nCoord + 0.5 + deltas[dir];
+                            
+                            // Segment distance
+                            vec2 pa = pixelPos - p1, ba = p2 - p1;
+                            float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+                            float d = length(pa - ba * h);
+                            
+                            if (d < minDist) {
+                                minDist = d;
+                                maxStrahler = nData.b;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (minDist < 2.0) {
+                float simPixelScale = length(fwidth(pixelPos));
+                float screenRadius = minDist / max(simPixelScale, 0.0001);
+                float targetWidth = (maxStrahler >= 5.0) ? 1.5 : 0.8; 
+                
+                if (screenRadius < targetWidth) {
+                    float edge = smoothstep(targetWidth, targetWidth - 0.5, screenRadius);
+                    result = mix(result, vec3(0.01, 0.08, 0.25), 0.7 * edge);
+                }
             }
         }
 
@@ -3284,6 +3438,8 @@ R"(
     ut_hydroMap = glGetUniformLocation(terrainProg, "uHydroMap");
     ut_viewMode = glGetUniformLocation(terrainProg, "uViewMode");
     ut_nodeLevel = glGetUniformLocation(terrainProg, "uNodeLevel");
+    ut_localHydroMap = glGetUniformLocation(terrainProg, "uLocalHydroMap");
+    ut_hasLocalHydro = glGetUniformLocation(terrainProg, "uHasLocalHydro");
 
     // --- Vegetation Shader (Instanced) ---
     const char* vegVertSrc = R"(
@@ -3791,6 +3947,16 @@ R"(
           glUniform3f(ut_nodeSide, node->sideA.x, node->sideA.y, node->sideA.z);
           glUniform3f(ut_nodeUp, node->sideB.x, node->sideB.y, node->sideB.z);
           glUniform1i(ut_nodeLevel, node->level);
+          
+          if (node->localHydroTex != 0) {
+              glActiveTexture(GL_TEXTURE8);
+              glBindTexture(GL_TEXTURE_2D, node->localHydroTex);
+              glUniform1i(ut_localHydroMap, 8);
+              glUniform1i(ut_hasLocalHydro, 1);
+          } else {
+              glUniform1i(ut_hasLocalHydro, 0);
+          }
+
           sharedPatchMesh.draw();
       } else {
           for (int i = 0; i < 4; i++) {
@@ -4334,11 +4500,13 @@ R"(
     glEnableVertexAttribArray(2);
 
     glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE); // Ribbons are 2D strips, must not be culled
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE); // Additive blending for glows
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, (GLsizei)stripVerts.size());
 
+    glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glBindVertexArray(0);

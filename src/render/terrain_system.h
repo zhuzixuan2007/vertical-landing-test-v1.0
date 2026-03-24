@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <cmath>
+#include <algorithm>
 
 namespace Terrain {
 
@@ -93,8 +94,15 @@ struct TerrainNode {
     bool isLeaf = true;
     std::unique_ptr<TerrainNode> children[4];
     
+    GLuint localHydroTex = 0;
+    bool hydroGenerated = false;
+
     TerrainNode(Vec3 c, Vec3 sa, Vec3 sb, float s, int l) 
         : center(c), sideA(sa), sideB(sb), size(s), level(l) {}
+
+    ~TerrainNode() {
+        if (localHydroTex) glDeleteTextures(1, &localHydroTex);
+    }
 
     void subdivide() {
         if (!isLeaf) return;
@@ -175,10 +183,6 @@ public:
         
         // 3. Node visual size (Kilometers)
         float nodeKm = node->size * radius * 2.0f;
-        
-        // 4. Subdivision logic: based on distance and visual size
-        // Increased distance multiplier (2.5 -> 3.0) for better continuity
-        // Relaxed horizon culling (nodeKm * 2.0f) to prevent gaps at large scales
         bool shouldSubdivide = (dist < nodeKm * 3.0f) && (node->level < 20) && (dist < horizonDist + nodeKm * 2.0f);
         
         if (shouldSubdivide) {
@@ -186,7 +190,94 @@ public:
             for(int i=0; i<4; i++) updateSubdivision(node->children[i].get(), camPosRel, radius);
         } else {
             node->collapse();
+            if (node->level >= 5) generateLocalHydro(node);
         }
+    }
+
+    void generateLocalHydro(TerrainNode* node) {
+        if (node->hydroGenerated || !hydroSim) return;
+        
+        int res = 64;
+        std::vector<float> grid(res * res);
+        std::vector<float> boundaries(res * 4);
+
+        // 1. Generate local height field
+        for (int y = 0; y < res; y++) {
+            for (int x = 0; x < res; x++) {
+                float u = (float)x / (res - 1);
+                float v = (float)y / (res - 1);
+                Vec3 p = node->center + node->sideA * (u - 0.5f) + node->sideB * (v - 0.5f);
+                // Sample raw tectonic + regional noise (matches shader's plateBase scale)
+                // We use sLevel=0.45 as the baseline.
+                grid[y * res + x] = getHeightRaw(p.normalized());
+            }
+        }
+
+        // 2. Sample global filledHeights for boundaries
+        auto getGlobalFilled = [&](const Vec3& p) {
+            float phi = std::acos(std::clamp((float)p.y, -1.0f, 1.0f));
+            float theta = std::atan2((float)p.z, (float)p.x);
+            float u = theta / (2.0f * 3.14159f) + 0.5f;
+            float v = phi / 3.14159f;
+            int tx = std::clamp((int)(u * (hydroSim->width - 1)), 0, (int)hydroSim->width - 1);
+            int ty = std::clamp((int)(v * (hydroSim->height - 1)), 0, (int)hydroSim->height - 1);
+            return hydroSim->data.filledHeight[ty * (int)hydroSim->width + tx];
+        };
+
+        for (int i = 0; i < res; i++) {
+            float t = (float)i / (res - 1);
+            // Top
+            boundaries[i] = getGlobalFilled((node->center - node->sideA*0.5f + node->sideB*0.5f + node->sideA*t).normalized());
+            // Bottom
+            boundaries[res + i] = getGlobalFilled((node->center - node->sideA*0.5f - node->sideB*0.5f + node->sideA*t).normalized());
+            // Left
+            boundaries[2*res + i] = getGlobalFilled((node->center - node->sideA*0.5f - node->sideB*0.5f + node->sideB*t).normalized());
+            // Right
+            boundaries[3*res + i] = getGlobalFilled((node->center + node->sideA*0.5f - node->sideB*0.5f + node->sideB*t).normalized());
+        }
+
+        // 3. Run Local Flood
+        Hydro::HydroSimulator::fillDepressionsLocal(res, grid, boundaries);
+
+        // 4. Upload to Texture
+        if (node->localHydroTex == 0) glGenTextures(1, &node->localHydroTex);
+        glBindTexture(GL_TEXTURE_2D, node->localHydroTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, res, res, 0, GL_RED, GL_FLOAT, grid.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        
+        node->hydroGenerated = true;
+    }
+
+    float getHeightRaw(const Vec3& normalizedPos) {
+        float phi = std::acos(std::clamp((float)normalizedPos.y, -1.0f, 1.0f));
+        float theta = std::atan2((float)normalizedPos.z, (float)normalizedPos.x);
+        float u = theta / (2.0f * 3.14159f) + 0.5f;
+        float v = phi / 3.14159f;
+
+        float plateBase = sampleTectonic(u, v);
+        float hRefined = plateBase;
+        float mountainMask = smoothstep_local(0.55f, 0.75f, plateBase);
+        float coastalMask = smoothstep_local(0.435f, 0.445f, plateBase) * (1.0f - smoothstep_local(0.455f, 0.465f, plateBase));
+
+        if (mountainMask > 0.01f) {
+            float epsG = 0.005f;
+            float hX = (sampleTectonic(u + epsG, v) - sampleTectonic(u - epsG, v));
+            float hY = (sampleTectonic(u, v + epsG) - sampleTectonic(u, v - epsG));
+            float sAngle = std::atan2(-hX, hY);
+            float ca = std::cos(sAngle), sa = std::sin(sAngle);
+            float strikeU = (float)normalizedPos.x * ca - (float)normalizedPos.z * sa;
+            float strikeV = (float)normalizedPos.x * sa + (float)normalizedPos.z * ca;
+            Vec3 pS(strikeU * 0.72f, (float)normalizedPos.y, strikeV * 1.28f);
+            hRefined += Noise::mountainNoise(pS * 6.5f) * 0.18f * mountainMask;
+        }
+        if (coastalMask > 0.1f) {
+            float cliffNoise = 1.0f - fabsf(Noise::noise(normalizedPos * 180.0f) * 1.5f - 0.5f);
+            hRefined += smoothstep_local(0.6f, 0.9f, cliffNoise) * 0.007f * coastalMask;
+        }
+        return hRefined;
     }
 
     float smoothstep_local(float edge0, float edge1, float x) {
